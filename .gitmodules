@@ -1,9 +1,12 @@
 [submodule "contrib/libc++fileno"]
     path = contrib/libc++fileno
     url = https://github.com/stephenrkell/libcxxfileno.git
+    branch = master
 [submodule "contrib/libsrk31c++"]
     path = contrib/libsrk31c++
     url = https://github.com/stephenrkell/libsrk31cxx.git
+    branch = master
 [submodule "contrib/libdwarf"]
     path = contrib/libdwarf
     url = https://github.com/stephenrkell/libdwarf.git
+    branch = master
