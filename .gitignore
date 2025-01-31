@@ -118,3 +118,4 @@ tests/visible-named/visible-named
 .fuse_hidden*
 .nfs*
 .dropbox*
+examples/compare-types
