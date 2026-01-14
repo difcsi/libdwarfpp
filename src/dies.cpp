@@ -4263,10 +4263,36 @@ namespace dwarf
 						Dwarf_Off current_offset_within_object = 0UL;
 						for (auto i = expr_pieces.begin(); i != expr_pieces.end(); ++i)
 						{
-							/* Evaluate this piece. */
+							/* Evaluate this piece.
+							 *
+							 * (20260114)  I have seen Clang generate things like this:
+							 
+							  <1><db1dd>: Abbrev Number: 8 (DW_TAG_variable)
+							    <db1de>   DW_AT_name        : (indirect string, offset: 0xd705): idle_cb_calls
+							    <db1e2>   DW_AT_type        : <0xdb201>
+							    <db1e6>   DW_AT_decl_file   : 1
+							    <db1e7>   DW_AT_decl_line   : 122
+							    <db1e8>   DW_AT_location    : 24 byte block: 3 0 25 32 0 0 0 0 0 93 4 93 4 3 4 25 32 0 0 0 0 0 93 4
+							         (DW_OP_addr: 322500; DW_OP_piece: 4; DW_OP_piece: 4; DW_OP_addr: 322504; DW_OP_piece: 4)
+
+							 ... where DW_OP_piece is preceded by an empty expression.
+							 What is this supposed to mean?
+							 The Doxygen for LLVM's "llvm::DwarfExpression::addFragmentOffset()"
+							 suggests that it is for skipping over regions of the byte space
+							 where there is no location, i.e. that piece is "optimized out".
+
+							 The variable in question is an array of 3 4-byte unsigned integers.
+							 I think the compiler has SROA'd it, noticed that the middle one
+							 can be omitted, and placed elements [0] and [2] adjacently.
+							 */
 							Dwarf_Unsigned piece_size = i->second;
-							Dwarf_Unsigned piece_start = expr::evaluator(i->first,
-								this->get_spec(r), {}).tos();
+							opt<Dwarf_Unsigned> maybe_piece_start;
+							/* Do we have an expression for this piece? */
+							if (i->first.size() > 0)
+							{
+								maybe_piece_start = expr::evaluator(i->first,
+									this->get_spec(r), {}).tos();
+							}
 
 							/* If we have only one piece, it means there might be no DW_OP_piece,
 							 * so the size of the piece will be unreliable (possibly zero). */
@@ -4277,8 +4303,8 @@ namespace dwarf
 							// HACK: increment early to avoid icl zero bug
 							current_offset_within_object += piece_size;
 
-							retval.insert(make_pair(
-								right_open(piece_start, piece_start + piece_size),
+							if (maybe_piece_start) retval.insert(make_pair(
+								right_open(*maybe_piece_start, *maybe_piece_start + piece_size),
 								current_offset_within_object
 							));
 						}
