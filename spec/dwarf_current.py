@@ -99,10 +99,11 @@ attr_types = [ \
 attr_type_map = dict(attr_types)
 
 # artificial superclasses
-# 
+# (WHY is with_static_location not a program element? I guess because CU isn't?
+# well I'm going to make it so anyway....)
 artificial_tags = [ \
 ("basic", ([], [], []) ),
-("program_element", ([("name", False), ("decl_column", False ), ("decl_file", False), ("decl_line", False), ("prototyped", False), ("declaration", False), ("external", False), ("visibility", False), ("artificial", False)], [], ["basic"]) ), \
+("program_element", ([("name", False), ("decl_column", False ), ("decl_file", False), ("decl_line", False), ("prototyped", False), ("declaration", False), ("external", False), ("visibility", False), ("artificial", False), ("abstract_origin", False)], [], ["basic"]) ), \
 ("with_instances", ([], [], ["program_element"])), \
 ("type", ([("byte_size", False )], [], ["with_instances"]) ), \
 ("type_describing_subprogram", ([("type", False)],  [], ["type"]) ), \
@@ -110,7 +111,7 @@ artificial_tags = [ \
 ("address_holding_type", ([("type", False)],  [], ["type_chain"]) ), \
 ("qualified_type", ([], [], ["type_chain"]) ), \
 ("with_named_children", ([], [], ["basic"])), \
-("with_static_location", ([], [], ["basic"])), \
+("with_static_location", ([], [], ["program_element"])), \
 ("with_type_describing_layout", ([("type", False)], [], ["program_element"])), \
 ("with_dynamic_location", ([], [], ["with_type_describing_layout"])), \
 ("data_member", ([("data_member_location", False), ("bit_size", False), ("bit_offset", False), ("data_bit_offset", False)], [], ["with_dynamic_location"])), \
@@ -194,7 +195,7 @@ tags = [ \
 ("pointer_type", ( [("pure", False), ("address_class", False)], [], ["address_holding_type"]  ) ), \
 ("reference_type", ( [("address_class", False)], [], ["address_holding_type"]  ) ), \
 ("rvalue_reference_type", ( [("address_class", False)], [], ["address_holding_type"]  ) ), \
-("compile_unit", ( [ ("language", True), ("comp_dir", False), ("producer", False), ("low_pc", False), ("high_pc", False), ("ranges", False), ("name", False), ("calling_convention", False)], [ "subprogram", "variable", "base_type", "pointer_type", "reference_type" ] + member_types, ["with_named_children", "with_static_location"]  ) ), \
+("compile_unit", ( [ ("language", True), ("comp_dir", False), ("producer", False), ("low_pc", False), ("high_pc", False), ("ranges", False), ("calling_convention", False)], [ "subprogram", "variable", "base_type", "pointer_type", "reference_type" ] + member_types, ["with_named_children", "with_static_location"]  ) ), \
 ("string_type", ( [ ("bit_size", False), ("string_length", False) ], [], ["type"]  ) ), \
 ("structure_type", ( [], [ "member", "access_declaration", "inheritance" ] + member_types, ["with_data_members", "with_named_children"]  ) ), \
 ("subroutine_type", ( [("calling_convention", False), ("pure", False), ("address_class", False)], ["formal_parameter", "unspecified_parameters"], ["type_describing_subprogram"]  ) ), \
