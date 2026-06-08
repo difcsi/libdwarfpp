@@ -57,14 +57,10 @@ jobs:
         run: |
           . contrib/env.sh
           ./autogen.sh
-          if [ "${{ matrix.backend }}" = "libdw" ]; then
-            # libdw uses elfutils' headers in /usr/include, not the vendored
-            # libdwarf that contrib/env.sh points LIBDWARF_INCLUDE_DIR at.
-            ./configure --with-dwarf-backend=libdw \
-              --with-libdwarf-includes=/usr/include --with-libdwarf-libs="-ldw"
-          else
-            ./configure --with-dwarf-backend=libdwarf
-          fi
+          # configure auto-selects the right headers/libs per backend (for
+          # libdw, elfutils' /usr/include + -ldw), so no need to pass
+          # --with-libdwarf-includes / --with-libdwarf-libs here.
+          ./configure --with-dwarf-backend=${{ matrix.backend }}
           make -j 2
 
       - name: Run tests (DWARF ${{ matrix.dwarf }})

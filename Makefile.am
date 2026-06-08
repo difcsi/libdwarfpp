@@ -64,6 +64,19 @@ endif
 BUILT_SOURCES = $(INC_PP)/dwarf-onlystd.h $(INC_PP)/dwarf-onlystd-v2.h $(INC_PP)/dwarf-ext-GNU.h $(INC_PP)/dwarf-current-adt.h $(INC_PP)/dwarf-current-factory.h $(DWARF_LIB_BUILT_SOURCE)
 CLEANFILES = $(BUILT_SOURCES)
 
+# A backend switch (libdwarf <-> libdw) can leave stale automake dependency
+# files behind: e.g. a src/$(DEPDIR)/*.Plo recorded under the libdwarf backend
+# still lists include/dwarfpp/dwarf-lib.h as a prerequisite. That header is not
+# generated under the libdw backend (it symlinks David Anderson's libdwarf.h,
+# which need not be installed), so the next build dies with
+#   No rule to make target '.../libdwarf.h', needed by '.../dwarf-lib.h'.
+# Remove the dependency-tracking files on clean so they are regenerated from
+# scratch; GNU make recreates the empty stubs via the am--depfiles rule before
+# re-reading them.
+clean-local:
+	-rm -f src/$(DEPDIR)/*.Po src/$(DEPDIR)/*.Plo
+	-rm -f examples/$(DEPDIR)/*.Po examples/$(DEPDIR)/*.Plo
+
 examplesdir = examples
 examples_PROGRAMS = examples/compare-types examples/core-query examples/dwarfppdump \
   examples/print_spec examples/sranges examples/subseq examples/eh-frame-hdr

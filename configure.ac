@@ -1,6 +1,6 @@
 AC_CONFIG_MACRO_DIR([m4])
-AC_PREREQ([2.69])
-AC_INIT([libdwarfpp], [0.1], [srk31@cl.cam.ac.uk])
+AC_PREREQ([2.72])
+AC_INIT([libdwarfpp],[0.1],[srk31@cl.cam.ac.uk])
 AC_CONFIG_SRCDIR([include/dwarfpp/lib.hpp])
 LT_INIT
 AC_LANG([C++])
@@ -77,10 +77,21 @@ AC_ARG_WITH([libdwarf-libs],
             ],
             [ac_libdwarf_libs="${LIBDWARF_LIB_DIR:+-L${LIBDWARF_LIB_DIR}} -ldwarf"])
 
-# When backing with libdw, default the link to elfutils' libdw unless the
-# user explicitly overrode it.
-if test "x$DWARFPP_USE_LIBDW" = x1 && test -z "$with_libdwarf_libs"; then
-        ac_libdwarf_libs="${LIBDWARF_LIB_DIR:+-L${LIBDWARF_LIB_DIR}} -ldw"
+# When backing with libdw, the headers and library we need are elfutils'
+# <dwarf.h> / <elfutils/libdw.h> and -ldw, which live in the system include and
+# library directories -- NOT the (possibly vendored) libdwarf locations that
+# LIBDWARF_INCLUDE_DIR / LIBDWARF_LIB_DIR may point at (e.g. via contrib/env.sh,
+# which sets them to the bundled libdwarf prefix). So unless the user explicitly
+# passed --with-libdwarf-includes / --with-libdwarf-libs, default them to the
+# system elfutils location. This makes '--with-dwarf-backend=libdw' sufficient on
+# its own, even with contrib/env.sh sourced.
+if test "x$DWARFPP_USE_LIBDW" = x1; then
+        if test -z "$with_libdwarf_includes"; then
+                ac_libdwarf_includes=/usr/include
+        fi
+        if test -z "$with_libdwarf_libs"; then
+                ac_libdwarf_libs="-ldw"
+        fi
 fi
 
 # we check for dwarf.h mainly to ensure we got a single directory as $ac_libdwarf_includes,
@@ -91,13 +102,17 @@ AC_SUBST([libdwarf_includes], [$ac_libdwarf_includes])
 AX_BOOST_BASE
 
 AC_CHECK_HEADER([boost/iostreams/filtering_stream.hpp], [], [AC_MSG_FAILURE([boost::iostreams is required])])
-AC_HAVE_LIBRARY(boost_iostreams, [], [AC_MSG_FAILURE([boost::iostreams is required])])
+AC_CHECK_LIB([boost_iostreams],[main],[],[AC_MSG_FAILURE([boost::iostreams is required])],[])ac_cv_lib_boost_iostreams=ac_cv_lib_boost_iostreams_main
+
 AC_CHECK_HEADER([boost/regex/concepts.hpp], [], [AC_MSG_FAILURE([boost::regex is required])])
-AC_HAVE_LIBRARY(boost_regex, [], [AC_MSG_FAILURE([boost::regex is required])])
+AC_CHECK_LIB([boost_regex],[main],[],[AC_MSG_FAILURE([boost::regex is required])],[])ac_cv_lib_boost_regex=ac_cv_lib_boost_regex_main
+
 AC_CHECK_HEADER([boost/serialization/traits.hpp], [], [AC_MSG_FAILURE([boost::serialization is required])])
-AC_HAVE_LIBRARY(boost_serialization, [], [AC_MSG_FAILURE([boost::serialization is required])])
+AC_CHECK_LIB([boost_serialization],[main],[],[AC_MSG_FAILURE([boost::serialization is required])],[])ac_cv_lib_boost_serialization=ac_cv_lib_boost_serialization_main
+
 AC_CHECK_HEADER([boost/system/api_config.hpp], [], [AC_MSG_FAILURE([boost::system is required])])
-AC_HAVE_LIBRARY(boost_system, [], [AC_MSG_FAILURE([boost::system is required])])
+AC_CHECK_LIB([boost_system],[main],[],[AC_MSG_FAILURE([boost::system is required])],[])ac_cv_lib_boost_system=ac_cv_lib_boost_system_main
+
 
 AC_CHECK_LIB(elf, [elf_begin], [], [AC_MSG_FAILURE([libelf is required])])
 if test "x$DWARFPP_USE_LIBDW" = x1; then
@@ -133,4 +148,5 @@ PKG_PROG_PKG_CONFIG
 PKG_CHECK_MODULES([LIBCXXFILENO], [libcxxfileno])
 PKG_CHECK_MODULES([LIBSRK31CXX], [libsrk31cxx])
 
-AC_OUTPUT([Makefile libdwarfpp.pc config.mk include/dwarfpp/config.h])
+AC_CONFIG_FILES([Makefile libdwarfpp.pc config.mk include/dwarfpp/config.h])
+AC_OUTPUT
