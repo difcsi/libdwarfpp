@@ -11,11 +11,13 @@ cases := $(filter-out makefile oprofile_data,$(shell cd $(root)/tests && find -m
 cases := $(filter-out $(EXCLUDE_CASES),$(cases))
 $(info cases is $(cases))
 
-# Force DWARF 4: the test cases run each built binary against itself, and the
-# legacy libdwarf backend cannot parse DWARF 5 (which modern GCC emits by
-# default). Pinning the version here keeps the tests deterministic across
-# toolchains rather than only on CI.
-CXXFLAGS += -I$(root)/include -O0 -fPIC -g -gdwarf-4 -std=c++14
+# Pin the DWARF version the test cases are compiled with: each case runs its
+# freshly-built binary against itself, so this controls the debug format under
+# test. Default to 4 (the legacy libdwarf backend cannot parse DWARF 5, which
+# modern GCC emits by default); the libdw backend can be exercised against 5 by
+# passing TEST_DWARF_VERSION=5. Kept here (not just in CI) for determinism.
+TEST_DWARF_VERSION ?= 4
+CXXFLAGS += -I$(root)/include -O0 -fPIC -g -gdwarf-$(TEST_DWARF_VERSION) -std=c++14
 LDFLAGS += -L$(root)/lib -Wl,-rpath,$(root)/lib
 LDLIBS += -ldwarfpp -lelf $(LIBSRK31CXX_LIBS) $(LIBCXXFILENO_LIBS) -lboost_system -lboost_regex -lboost_filesystem -lz
 

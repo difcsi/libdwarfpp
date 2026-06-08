@@ -14,9 +14,22 @@ To build this you'll need a recent-ish C++ compiler, a GNU build system,
 recent-ish boost, and my other repositories libsrk31c++ and
 libc++fileno (present as submodules in contrib/, if building from git).
 
-You'll also need David Anderson's libdwarf (also submodule'd). I'm
-slowly working on making things compile-time configurable to use libdw
-instead (from elfutils), but it's not there yet.
+You'll also need a DWARF backing library. By default that is David
+Anderson's libdwarf (also submodule'd). Alternatively you can back
+libdwarfpp with elfutils' libdw:
+
+    ./configure --with-dwarf-backend=libdw
+
+This routes libdwarfpp through a libdwarf-compatible shim
+(include/dwarfpp/libdw.hpp + src/libdw-compat.cpp) layered on top of
+libdw. Supported under libdw: compilation-unit and DIE traversal, DIE
+names/offsets/tags, attributes and their values, location expressions
+and location lists (via dwarf_getlocations), range lists (via
+dwarf_ranges), per-CU source-file lists (via dwarf_getsrcfiles), and
+frame/CFI information for both .debug_frame and .eh_frame (parsed with
+dwarf_next_cfi and presented as libdwarf's FDE/CIE handle API). The
+.eh_frame output matches readelf -wf, including the decoded CFI
+instruction streams.
 
 Autotools support is new and is only lightly tested; improvements are
 welcome. On some non-Debian-based distributions, libdwarf headers don't

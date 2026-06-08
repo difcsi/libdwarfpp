@@ -1,9 +1,19 @@
 #ifndef DWARFPP_LIBDWARF_HPP_
 #define DWARFPP_LIBDWARF_HPP_
 
+#include "config.h" /* our configure-generated header, for HAVE_DWARF_FRAME_OP3
+                      * and DWARFPP_USE_LIBDW */
+
+#if defined(DWARFPP_USE_LIBDW) && DWARFPP_USE_LIBDW
+/* Use elfutils' libdw via the libdwarf-compatibility shim instead of David
+ * Anderson's libdwarf. Everything the rest of libdwarfpp needs from this
+ * header (types, the Error/No_entry helpers, the dwarf_* C API) is provided
+ * by libdw.hpp. */
+#include "dwarfpp/libdw.hpp"
+#else
+
 #include <iostream>
 #include <libelf.h>
-#include "config.h" /* our configure-generated header, for HAVE_DWARF_FRAME_OP3 */
 
 namespace dwarf
 {
@@ -69,5 +79,7 @@ namespace dwarf
 #endif
 	}
 }
+
+#endif /* DWARFPP_USE_LIBDW */
 
 #endif

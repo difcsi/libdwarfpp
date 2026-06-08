@@ -12,7 +12,7 @@ type-equality: test.os
 # parse the DWARF 5 a modern compiler emits by default. (It previously extracted
 # an object from contrib libdwarf.a, which is DWARF 5 under a modern toolchain.)
 test.o: hello.c
-	$(CC) -gdwarf-4 -g -c $< -o $@
+	$(CC) -gdwarf-$(TEST_DWARF_VERSION) -g -c $< -o $@
 
 test.os: test.o test-renamed.o
 	ld -r -o $@ $+
