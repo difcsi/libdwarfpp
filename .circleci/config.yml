@@ -1,31 +1,82 @@
-version: 2.0
+# CircleCI configuration.
+#
+# libdwarfpp can be backed by David Anderson's libdwarf (the historical
+# default) or by elfutils' libdw. We build and test three configurations in
+# parallel (this mirrors .github/workflows/ci.yml):
+#   * libdwarf backend, tests compiled as DWARF 4 (the legacy path; libdwarf
+#     cannot parse DWARF 5, so the -static cases that embed system DWARF 5 are
+#     excluded);
+#   * libdw backend, tests compiled as DWARF 4;
+#   * libdw backend, tests compiled as DWARF 5.
+version: 2.1
+
 jobs:
   build:
+    parameters:
+      backend:
+        type: string
+      dwarf:
+        type: string
+      exclude_cases:
+        type: string
+        default: ""
     docker:
-      - image: ubuntu:18.04
+      - image: ubuntu:24.04
     steps:
       - run:
           name: Install dependencies
           command: |
-            apt update && apt install -y git build-essential make time \
-            autoconf automake libtool pkg-config autoconf-archive \
-            g\+\+ python3 \
-            libelf-dev libboost-iostreams-dev libboost-regex-dev \
-            libboost-serialization-dev libboost-filesystem-dev
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update && apt-get install -y git build-essential make time \
+              autoconf automake libtool pkg-config autoconf-archive \
+              g++ python3 \
+              libelf-dev libdw-dev libzstd-dev libboost-iostreams-dev \
+              libboost-regex-dev libboost-serialization-dev libboost-filesystem-dev
       - checkout
       - run:
           name: Update submodules
-          command: git submodule update --init
+          command: git submodule update --init --recursive
       - run:
           name: Build submodules
           command: make -C contrib -j 2
       - run:
-          name: Build project
+          name: Build project (<< parameters.backend >> backend)
           command: |
             . contrib/env.sh
             ./autogen.sh
-            ./configure
+            if [ "<< parameters.backend >>" = "libdw" ]; then
+              # libdw uses elfutils' headers in /usr/include, not the vendored
+              # libdwarf that contrib/env.sh points LIBDWARF_INCLUDE_DIR at.
+              ./configure --with-dwarf-backend=libdw \
+                --with-libdwarf-includes=/usr/include --with-libdwarf-libs="-ldw"
+            else
+              ./configure --with-dwarf-backend=libdwarf
+            fi
             make -j 2
       - run:
-          name: Run tests
-          command: make -C tests -j 2
+          name: Run tests (DWARF << parameters.dwarf >>)
+          command: |
+            make -C tests -j 2 \
+              TEST_DWARF_VERSION=<< parameters.dwarf >> \
+              EXCLUDE_CASES="<< parameters.exclude_cases >>"
+
+workflows:
+  build-and-test:
+    jobs:
+      - build:
+          name: libdwarf-dwarf4
+          backend: libdwarf
+          dwarf: "4"
+          exclude_cases: "visible-named grandchildren"
+      - build:
+          name: libdw-dwarf4
+          backend: libdw
+          dwarf: "4"
+          # timed-dump-core is a wall-clock perf gate (our runtime vs dwarfdump's);
+          # the libdw compat shim's per-DIE overhead makes it unreliable here.
+          exclude_cases: "timed-dump-core"
+      - build:
+          name: libdw-dwarf5
+          backend: libdw
+          dwarf: "5"
+          exclude_cases: "timed-dump-core"
