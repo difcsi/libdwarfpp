@@ -1,4 +1,13 @@
-# GitHub Actions port of .circleci/config.yml
+# GitHub Actions CI, originally ported from .circleci/config.yml.
+#
+# libdwarfpp can be backed by David Anderson's libdwarf (the historical
+# default) or by elfutils' libdw. We build and test three configurations in
+# parallel:
+#   * libdwarf backend, tests compiled as DWARF 4 (the legacy path; libdwarf
+#     cannot parse DWARF 5, so the -static cases that embed system DWARF 5 are
+#     excluded);
+#   * libdw backend, tests compiled as DWARF 4;
+#   * libdw backend, tests compiled as DWARF 5.
 name: CI
 
 on:
@@ -9,6 +18,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: libdwarf, DWARF 4
+            backend: libdwarf
+            dwarf: 4
+            exclude_cases: visible-named grandchildren
+          - name: libdw, DWARF 4
+            backend: libdw
+            dwarf: 4
+            exclude_cases: timed-dump-core
+          - name: libdw, DWARF 5
+            backend: libdw
+            dwarf: 5
+            exclude_cases: timed-dump-core
+    name: build (${{ matrix.name }})
     steps:
       - name: Install dependencies
         run: |
@@ -16,8 +42,8 @@ jobs:
           sudo apt-get install -y git build-essential make time \
             autoconf automake libtool pkg-config autoconf-archive \
             g++ python3 \
-            libelf-dev libzstd-dev libboost-iostreams-dev libboost-regex-dev \
-            libboost-serialization-dev libboost-filesystem-dev
+            libelf-dev libdw-dev libzstd-dev libboost-iostreams-dev \
+            libboost-regex-dev libboost-serialization-dev libboost-filesystem-dev
 
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -27,16 +53,28 @@ jobs:
       - name: Build submodules
         run: make -C contrib -j 2
 
-      - name: Build project
+      - name: Build project (${{ matrix.backend }} backend)
         run: |
           . contrib/env.sh
           ./autogen.sh
-          ./configure
+          if [ "${{ matrix.backend }}" = "libdw" ]; then
+            # libdw uses elfutils' headers in /usr/include, not the vendored
+            # libdwarf that contrib/env.sh points LIBDWARF_INCLUDE_DIR at.
+            ./configure --with-dwarf-backend=libdw \
+              --with-libdwarf-includes=/usr/include --with-libdwarf-libs="-ldw"
+          else
+            ./configure --with-dwarf-backend=libdwarf
+          fi
           make -j 2
 
-      - name: Run tests
-        # visible-named and grandchildren link -static and therefore embed
-        # DWARF 5 debug info from the system static libraries, which the legacy
-        # libdwarf backend cannot parse (and which can't practically be rebuilt
-        # as DWARF 4). They are excluded here; the libdw backend handles them.
-        run: make -C tests -j 2 EXCLUDE_CASES="visible-named grandchildren"
+      - name: Run tests (DWARF ${{ matrix.dwarf }})
+        # exclude_cases (set per matrix entry):
+        #  - libdwarf: the -static cases visible-named/grandchildren embed DWARF 5
+        #    debug info from the system static libraries, which libdwarf can't parse.
+        #  - libdw: timed-dump-core is a wall-clock perf gate (our runtime vs
+        #    dwarfdump's); the compat shim's per-DIE overhead makes it unreliable
+        #    on shared CI runners.
+        run: |
+          make -C tests -j 2 \
+            TEST_DWARF_VERSION=${{ matrix.dwarf }} \
+            EXCLUDE_CASES="${{ matrix.exclude_cases }}"
