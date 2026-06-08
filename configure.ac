@@ -1,5 +1,5 @@
 AC_CONFIG_MACRO_DIR([m4])
-AC_PREREQ([2.72])
+AC_PREREQ([2.71])
 AC_INIT([libdwarfpp],[0.1],[srk31@cl.cam.ac.uk])
 AC_CONFIG_SRCDIR([include/dwarfpp/lib.hpp])
 LT_INIT
