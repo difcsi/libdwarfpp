@@ -4,9 +4,18 @@ root := $(realpath $(dir $(THIS_MAKEFILE))/..)
 include $(root)/config.mk
 
 cases := $(filter-out makefile oprofile_data,$(shell cd $(root)/tests && find -mindepth 1 -maxdepth 1 -type d -name '[a-z]*' -print | while read f; do basename $$f ; done ))
+# EXCLUDE_CASES lets a caller (e.g. CI) skip specific cases. The -static cases
+# visible-named/grandchildren embed DWARF 5 debug info from the system static
+# libraries they pull in, which the legacy libdwarf backend cannot parse and
+# which cannot practically be rebuilt as DWARF 4; the libdw backend handles them.
+cases := $(filter-out $(EXCLUDE_CASES),$(cases))
 $(info cases is $(cases))
 
-CXXFLAGS += -I$(root)/include -O0 -fPIC -g -std=c++14
+# Force DWARF 4: the test cases run each built binary against itself, and the
+# legacy libdwarf backend cannot parse DWARF 5 (which modern GCC emits by
+# default). Pinning the version here keeps the tests deterministic across
+# toolchains rather than only on CI.
+CXXFLAGS += -I$(root)/include -O0 -fPIC -g -gdwarf-4 -std=c++14
 LDFLAGS += -L$(root)/lib -Wl,-rpath,$(root)/lib
 LDLIBS += -ldwarfpp -lelf $(LIBSRK31CXX_LIBS) $(LIBCXXFILENO_LIBS) -lboost_system -lboost_regex -lboost_filesystem -lz
 
@@ -31,8 +40,10 @@ visible-named: $(root)/lib/libdwarfpp.a
 
 # HACK: manually link these with libdwarf for now, because unlike the .so,
 # the .a does not include it. And we must append -lelf and -lz... sigh.
-grandchildren: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz
-visible-named: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz
+# -lzstd is needed because a modern static libelf.a depends on zstd for its
+# compressed-section support (the old ubuntu:18.04 libelf.a did not).
+grandchildren: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz -lzstd
+visible-named: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz -lzstd
 
 # test case build recipes call back to us using $(MAKE) -f ../Makefile
 # ... here we allow each case to define an include.mk for extra rules
