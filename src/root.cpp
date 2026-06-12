@@ -475,8 +475,17 @@ namespace dwarf
 				//assert(current_cu_offset == *prev_next_cu_header); // -- this is wrong
 
 				assert(first_cu_offset);
+				/* The CU DIE sits just past this CU's header. With a single DWARF
+				 * version the header size is constant (so the DIE offset equals
+				 * the next-CU-header offset plus first_cu_offset), but a binary may
+				 * mix DWARF 4 and 5 CUs -- e.g. a -static link of DWARF 4 objects
+				 * against DWARF 5 system libraries -- whose header sizes differ
+				 * (11 vs 12 bytes). So only require that the CU DIE lies a small,
+				 * header-sized distance past the previous next-CU-header offset. */
 				assert(current_cu_offset == *first_cu_offset
-				 ||    current_cu_offset == (*prev_next_cu_header) + *first_cu_offset);
+				 ||    current_cu_offset == (*prev_next_cu_header) + *first_cu_offset
+				 ||    (current_cu_offset > *prev_next_cu_header
+				        && current_cu_offset - *prev_next_cu_header < 32));
 			}
 
 			return true;
@@ -496,7 +505,10 @@ namespace dwarf
 			do
 			{
 				ret = advance_cu_context();
-				if (ret && have_no_context) { have_no_context = false; assert(current_cu_offset == 11); }
+				/* After advancing from no context we are at the first CU, whose DIE
+				 * offset is first_cu_offset (11 for 32-bit DWARF <= 4, 12 for DWARF 5,
+				 * etc.) rather than a hard-coded 11. */
+				if (ret && have_no_context) { have_no_context = false; assert(!first_cu_offset || current_cu_offset == *first_cu_offset); }
 			}
 			while (current_cu_offset != 0 // i.e. stop if we hit the no-context case
 				&& current_cu_offset != off // i.e. stop if we reach our target

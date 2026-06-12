@@ -14,9 +14,18 @@ To build this you'll need a recent-ish C++ compiler, a GNU build system,
 recent-ish boost, and my other repositories libsrk31c++ and
 libc++fileno (present as submodules in contrib/, if building from git).
 
-You'll also need David Anderson's libdwarf (also submodule'd). I'm
-slowly working on making things compile-time configurable to use libdw
-instead (from elfutils), but it's not there yet.
+By default, libdwarfpp uses it's own bundled libdwarf (in contrib/libdwarf).
+Alternatively you can back libdwarfpp with elfutils' libdw:
+
+    ./configure --with-dwarf-backend=libdw
+
+NOTE: you must provide your own elfutils libraries if you do this.
+
+The libdw backend is highly experimental.
+
+It routes libdwarfpp through a libdwarf-compatible shim
+(include/dwarfpp/libdw.hpp + src/libdw-compat.cpp) layered on top of
+libdw: performance is likely to be poor, and a full rework of libdwarfpp's internals is probably needed to use libdw directly and performantly.
 
 Autotools support is new and is only lightly tested; improvements are
 welcome. On some non-Debian-based distributions, libdwarf headers don't
@@ -39,9 +48,9 @@ What's included:
 - can add and modify DIEs in memory (but not write out, yet; see below)
 - frame information support (including eh_frame)
 
-Completeness: various things are part-done, like the DWARF evaluator 
-(only supports the opcodes I've needed so far) and support for multiple 
-DWARF standards (mostly there, but not hooked up properly; in practice 
+Completeness: various things are part-done, like the DWARF evaluator
+(only supports the opcodes I've needed so far) and support for multiple
+DWARF standards (mostly there, but not hooked up properly; in practice
 it doesn't matter too much). Many backwards iterators are also missing
 (patches welcome). Register definitions are only for x86 arches at
 present.

@@ -6,7 +6,8 @@ include $(root)/config.mk
 cases := $(filter-out makefile oprofile_data,$(shell cd $(root)/tests && find -mindepth 1 -maxdepth 1 -type d -name '[a-z]*' -print | while read f; do basename $$f ; done ))
 $(info cases is $(cases))
 
-CXXFLAGS += -I$(root)/include -O0 -fPIC -g -std=c++14
+TEST_DWARF_VERSION ?= 4
+CXXFLAGS += -I$(root)/include -O0 -fPIC -g -gdwarf-$(TEST_DWARF_VERSION) -std=c++14
 LDFLAGS += -L$(root)/lib -Wl,-rpath,$(root)/lib
 LDLIBS += -ldwarfpp -lelf $(LIBSRK31CXX_LIBS) $(LIBCXXFILENO_LIBS) -lboost_system -lboost_regex -lboost_filesystem -lz
 
