@@ -9,7 +9,7 @@ $(info cases is $(cases))
 TEST_DWARF_VERSION ?= 4
 CXXFLAGS += -I$(root)/include -O0 -fPIC -g -gdwarf-$(TEST_DWARF_VERSION) -std=c++14
 LDFLAGS += -L$(root)/lib -Wl,-rpath,$(root)/lib
-LDLIBS += -ldwarfpp -lelf $(LIBSRK31CXX_LIBS) $(LIBCXXFILENO_LIBS) -lboost_system -lboost_regex -lboost_filesystem -lz
+LDLIBS += -ldwarfpp -lelf $(LIBSRK31CXX_LIBS) $(LIBCXXFILENO_LIBS) -lboost_system -lboost_regex -lboost_filesystem -lz -lzstd
 
 .PHONY: default
 default: all
@@ -37,16 +37,21 @@ grandchildren: $(root)/lib/libdwarfpp.a
 visible-named: $(root)/lib/libdwarfpp.a
 
 # HACK: manually link these with libdwarf for now, because unlike the .so,
-# the .a does not include it. And we must append -lelf and -lz... sigh.
-grandchildren: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz
-visible-named: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz
+# the .a does not include it. And we must append -lelf, -lz and -lzstd
+# (newer libelf.a's elf_compress.o references ZSTD)... sigh.
+grandchildren: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz -lzstd
+visible-named: LDLIBS += $(LIBDWARF_LIBS) -lelf -lz -lzstd
 
 # test case build recipes call back to us using $(MAKE) -f ../Makefile
 # ... here we allow each case to define an include.mk for extra rules
 -include include.mk
 
+# EXCLUDE_CASES is a space-separated list of cases to skip (e.g. from CI)
+EXCLUDE_CASES ?=
+run_cases := $(filter-out $(EXCLUDE_CASES),$(cases))
+
 .PHONY: all
-all: $(foreach c,$(cases),run-$(c))
+all: $(foreach c,$(run_cases),run-$(c))
 
 # quick hack for a status report
 .PHONY: report
