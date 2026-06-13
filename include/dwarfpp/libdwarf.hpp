@@ -5,10 +5,8 @@
                       * and DWARFPP_USE_LIBDW */
 
 #if defined(DWARFPP_USE_LIBDW) && DWARFPP_USE_LIBDW
-/* Use elfutils' libdw via the libdwarf-compatibility shim.
-* As it looks like libdwarf, we keep a single header instead of header switching in every file. */
-#include "dwarfpp/libdw.hpp"
-#else
+#error "include/dwarfpp/libdwarf.hpp is for the libdwarf backend only"
+#endif
 
 #include <iostream>
 #include <libelf.h>
@@ -77,7 +75,5 @@ namespace dwarf
 #endif
 	}
 }
-
-#endif /* DWARFPP_USE_LIBDW */
 
 #endif

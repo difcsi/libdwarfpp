@@ -57,8 +57,7 @@ workflows:
           name: libdw-dwarf4
           backend: libdw
           dwarf: "4"
-          # timed-dump-core is a wall-clock perf gate (our runtime vs dwarfdump's);
-          # the libdw compat shim's per-DIE overhead makes it unreliable here.
+          # timed-dump-core is a wall-clock perf gate, we aren't this confident in libdw backend yet
           exclude_cases: "timed-dump-core"
       - build:
           name: libdw-dwarf5

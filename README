@@ -21,11 +21,7 @@ Alternatively you can back libdwarfpp with elfutils' libdw:
 
 NOTE: you must provide your own elfutils libraries if you do this.
 
-The libdw backend is highly experimental.
-
-It routes libdwarfpp through a libdwarf-compatible shim
-(include/dwarfpp/libdw.hpp + src/libdw-compat.cpp) layered on top of
-libdw: performance is likely to be poor, and a full rework of libdwarfpp's internals is probably needed to use libdw directly and performantly.
+The libdw backend is experimental. But it also reads DWARF 5, which the bundled libdwarf cannot.
 
 Autotools support is new and is only lightly tested; improvements are
 welcome. On some non-Debian-based distributions, libdwarf headers don't

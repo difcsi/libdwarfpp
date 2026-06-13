@@ -516,13 +516,14 @@ namespace dwarf
 			// begin sanity check
 			if (ret)
 			{
-				Dwarf_Die test;
-				Dwarf_Error temporary_error;
-				int test_ret = dwarf_siblingof(dbg.handle.get(), nullptr, &test, &temporary_error);
-				assert(test_ret == DW_DLV_OK);
-				Dwarf_Off test_off;
-				dwarf_dieoffset(test, &test_off, &temporary_error);
-				assert(test_off == off);
+				/* The first DIE of the now-current CU should be at `off`. Use the
+				 * handle layer (the "current CU" Die constructor) rather than a
+				 * raw libdwarf handle, so this works under both backends -- the
+				 * libdw backend has no allocating dwarf_siblingof. */
+				Die::handle_type test = Die::try_construct(*this);
+				assert(test);
+				Die test_die(std::move(test));
+				assert(test_die.offset_here() == off);
 			}
 			// end sanity check
 			return ret;

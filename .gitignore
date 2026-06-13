@@ -63,12 +63,15 @@ tests/core-bfs/core-bfs
 tests/core-variadic/core-variadic
 tests/coretest/coretest
 tests/fde-decode/fde-decode
+tests/fde-order/fde-order
 tests/fde-print/fde-print
 tests/grandchildren/grandchildren
 tests/live-dies/live-dies
 tests/make-dies/make-dies
+tests/reloc-multicu/reloc-multicu
 tests/resolve/resolve
 tests/siblings-core/siblings-core
+tests/static-loc/static-loc
 tests/timed-dump-core/timed-dump-core
 tests/type-equality/type-equality
 tests/type-equality/test.os

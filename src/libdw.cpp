@@ -1,11 +1,11 @@
 /* dwarfpp: C++ binding for a useful subset of libdwarf, plus extra goodies.
  *
- * libdw-compat.cpp: a libdwarf-compatible C API implemented over elfutils'
- * libdw. See include/dwarfpp/libdw.hpp for the rationale.
+ * libdw.cpp: the C entry points that back libdwarfpp directly with elfutils'
+ * libdw (no libdwarf-compatibility shim). See include/dwarfpp/libdw.hpp.
  *
  * Calls into libdw itself are written with a leading "::" so that, inside
- * namespace dwarf::lib, they resolve to elfutils' functions rather than to
- * the compatibility wrappers of the same name defined here.
+ * namespace dwarf::lib, they resolve to elfutils' functions rather than to the
+ * wrappers of the same name defined here.
  *
  * Copyright (c) 2008--26, Stephen Kell. For licensing information, see the
  * LICENSE file in the root of the libdwarfpp tree.
@@ -23,6 +23,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 #include <map>
 #include <algorithm>
@@ -32,27 +33,35 @@ namespace dwarf
 {
 	namespace lib
 	{
-		/* Definitions of the opaque handle structs forward-declared in libdw.hpp.
-		 * Each wraps a copy of the corresponding libdw by-value struct. */
+		/* The transparent mirrors declared in libdw.hpp must be byte-for-byte
+		 * identical to the libdw structs we reinterpret_cast them to. If a future
+		 * elfutils ever changes these layouts, these fire at compile time. */
+		static_assert(sizeof(Dwarf_Die_s) == sizeof(::Dwarf_Die),
+			"lib::Dwarf_Die_s must match ::Dwarf_Die layout");
+		static_assert(alignof(Dwarf_Die_s) == alignof(::Dwarf_Die),
+			"lib::Dwarf_Die_s alignment must match ::Dwarf_Die");
+		static_assert(sizeof(Dwarf_Attribute_s) == sizeof(::Dwarf_Attribute),
+			"lib::Dwarf_Attribute_s must match ::Dwarf_Attribute layout");
+		static_assert(alignof(Dwarf_Attribute_s) == alignof(::Dwarf_Attribute),
+			"lib::Dwarf_Attribute_s alignment must match ::Dwarf_Attribute");
+
+		/* Reinterpret our inline mirrors as the libdw by-value structs. Safe
+		 * given the static_asserts above (POD, identical layout). */
+		static inline ::Dwarf_Die *L(Dwarf_Die d)
+		{ return reinterpret_cast< ::Dwarf_Die *>(d); }
+		static inline ::Dwarf_Attribute *L(Dwarf_Attribute a)
+		{ return reinterpret_cast< ::Dwarf_Attribute *>(a); }
+
+		/* Dwarf_Debug stays a heap object (one per file); it carries the ::Dwarf
+		 * plus the state we need to emulate libdwarf's stateful CU cursor. */
 		struct Dwarf_Debug_s
 		{
 			::Dwarf *dw;
 			::Elf *elf;            // non-null only if we opened it ourselves
 			int fd;                // -1 unless we opened it
-			/* state for emulating libdwarf's stateful CU cursor */
 			::Dwarf_Off next_cu_off;        // arg for the next dwarf_next_unit
 			::Dwarf_Off current_cu_die_off; // DIE offset of the current CU
 			bool have_current;
-		};
-		struct Dwarf_Die_s
-		{
-			::Dwarf_Die d;
-			Dwarf_Debug_s *dbg;
-		};
-		struct Dwarf_Attribute_s
-		{
-			::Dwarf_Attribute a;
-			Dwarf_Debug_s *dbg;
 		};
 		struct Dwarf_Error_s { int errnum; };
 
@@ -63,20 +72,13 @@ namespace dwarf
 		/* ---- session / sections ----------------------------------------- */
 
 		/* elfutils' libdw does not apply ELF relocations when reading DWARF from
-		 * a relocatable (ET_REL) object -- unlike the libdwarf this shim
-		 * replaces. In such objects, inter-section references in the debug data
-		 * are left at their on-disk placeholder (zero), with the real value
-		 * carried in a RELA entry's addend. The most damaging case is each CU
-		 * header's debug_abbrev_offset: left unrelocated, every CU after the
-		 * first (whose abbrev table is not at offset 0) is matched against the
-		 * wrong abbrev table and mis-parsed entirely. DW_FORM_strp/sec_offset/
-		 * addr fields are affected likewise.
-		 *
-		 * libdw shares libelf's section buffers (dwarf_getelf -> elf_getdata),
-		 * and parses DIEs lazily, so we patch those buffers in place once, right
-		 * after opening, before any traversal. x86-64 only (the rest of this
-		 * shim already assumes it); other machines are left untouched rather
-		 * than risk corrupting their data. */
+		 * a relocatable (ET_REL) object. In such objects, inter-section
+		 * references in the debug data are left at their on-disk placeholder
+		 * (zero), with the real value carried in a RELA entry's addend. The most
+		 * damaging case is each CU header's debug_abbrev_offset: left
+		 * unrelocated, every CU after the first is matched against the wrong
+		 * abbrev table and mis-parsed. We patch the section buffers in place once,
+		 * right after opening, before any traversal. x86-64 only. */
 		static void apply_debug_relocations(::Elf *e)
 		{
 			if (!e) return;
@@ -125,8 +127,6 @@ namespace dwarf
 							{ uint64_t v = value; std::memcpy(p, &v, 8); }
 							break;
 						default:
-							/* Other reloc types don't appear in debug sections
-							 * for x86-64; leave the placeholder untouched. */
 							break;
 					}
 				}
@@ -139,8 +139,8 @@ namespace dwarf
 			/* We open the Elf ourselves with ELF_C_READ (not the mmap'd path
 			 * that ::dwarf_begin(fd) uses), because apply_debug_relocations()
 			 * patches the section buffers in place and ELF_C_READ gives us
-			 * writable, process-private buffers. We then own the Elf and must
-			 * free it in dwarf_finish. */
+			 * writable, process-private buffers. We then own the Elf and free it
+			 * in dwarf_finish. */
 			::elf_version(EV_CURRENT);
 			::Elf *e = ::elf_begin(fd, ELF_C_READ, nullptr);
 			if (!e) return DW_DLV_ERROR;
@@ -158,9 +158,6 @@ namespace dwarf
 			Dwarf_Handler /*errhand*/, Dwarf_Ptr /*errarg*/,
 			Dwarf_Debug *ret_dbg, Dwarf_Error * /*error*/)
 		{
-			/* The caller owns the Elf here; apply_debug_relocations() requires
-			 * writable section buffers (i.e. the Elf was opened with ELF_C_READ,
-			 * not a read-only mmap). */
 			::Dwarf *dw = ::dwarf_begin_elf(reinterpret_cast< ::Elf*>(elf),
 				DWARF_C_READ, nullptr);
 			if (!dw) return DW_DLV_ERROR;
@@ -193,10 +190,9 @@ namespace dwarf
 		}
 
 		/* ---- CU / DIE traversal ----------------------------------------- *
-		 * libdwarf exposes a stateful cursor: dwarf_next_cu_header_b() steps
-		 * to the next CU and dwarf_siblingof(dbg, NULL, ...) yields the root
-		 * DIE of the *current* CU. We emulate that state inside Dwarf_Debug_s.
-		 */
+		 * libdwarf exposes a stateful cursor: dwarf_next_cu_header_b() steps to
+		 * the next CU and the "first DIE of the current CU" is then obtained via
+		 * dwarfpp_cu_die(). We emulate that state inside Dwarf_Debug_s. */
 		int dwarf_next_cu_header_b(Dwarf_Debug dbg,
 			Dwarf_Unsigned *cu_header_length, Dwarf_Half *version_stamp,
 			Dwarf_Unsigned *abbrev_offset, Dwarf_Half *address_size,
@@ -213,8 +209,6 @@ namespace dwarf
 				nullptr, nullptr);
 			if (r != 0)
 			{
-				/* r > 0 means no more units; r < 0 means error. Either way we
-				 * reset the cursor, matching libdwarf's wrap-around behaviour. */
 				dbg->next_cu_off = 0;
 				dbg->current_cu_die_off = 0;
 				dbg->have_current = false;
@@ -233,74 +227,50 @@ namespace dwarf
 			return DW_DLV_OK;
 		}
 
-		int dwarf_siblingof(Dwarf_Debug dbg, Dwarf_Die die,
-			Dwarf_Die *ret_sib, Dwarf_Error * /*error*/)
+		int dwarfpp_cu_die(Dwarf_Debug dbg, Dwarf_Die out)
 		{
-			if (!die)
-			{
-				/* "first DIE of the current CU" */
-				if (!dbg->have_current) return DW_DLV_NO_ENTRY;
-				::Dwarf_Die cu;
-				if (::dwarf_offdie(dbg->dw, dbg->current_cu_die_off, &cu) == nullptr)
-					return DW_DLV_ERROR;
-				Dwarf_Die out = new Dwarf_Die_s();
-				out->d = cu; out->dbg = dbg;
-				*ret_sib = out;
-				return DW_DLV_OK;
-			}
-			::Dwarf_Die sib;
-			int r = ::dwarf_siblingof(&die->d, &sib);
-			if (r == 0)
-			{
-				Dwarf_Die out = new Dwarf_Die_s();
-				out->d = sib; out->dbg = die->dbg;
-				*ret_sib = out;
-				return DW_DLV_OK;
-			}
+			if (!dbg->have_current) return DW_DLV_NO_ENTRY;
+			if (::dwarf_offdie(dbg->dw, dbg->current_cu_die_off, L(out)) == nullptr)
+				return DW_DLV_ERROR;
+			return DW_DLV_OK;
+		}
+
+		int dwarfpp_siblingof(Dwarf_Debug /*dbg*/, Dwarf_Die die, Dwarf_Die out)
+		{
+			int r = ::dwarf_siblingof(L(die), L(out));
+			if (r == 0) return DW_DLV_OK;
 			return (r < 0) ? DW_DLV_ERROR : DW_DLV_NO_ENTRY;
 		}
 
-		int dwarf_child(Dwarf_Die die, Dwarf_Die *ret_child, Dwarf_Error * /*error*/)
+		int dwarfpp_child(Dwarf_Die die, Dwarf_Die out)
 		{
-			::Dwarf_Die kid;
-			int r = ::dwarf_child(&die->d, &kid);
-			if (r == 0)
-			{
-				Dwarf_Die out = new Dwarf_Die_s();
-				out->d = kid; out->dbg = die->dbg;
-				*ret_child = out;
-				return DW_DLV_OK;
-			}
+			int r = ::dwarf_child(L(die), L(out));
+			if (r == 0) return DW_DLV_OK;
 			return (r < 0) ? DW_DLV_ERROR : DW_DLV_NO_ENTRY;
 		}
 
-		int dwarf_offdie(Dwarf_Debug dbg, Dwarf_Off off, Dwarf_Die *ret_die,
-			Dwarf_Error * /*error*/)
+		int dwarfpp_offdie(Dwarf_Debug dbg, Dwarf_Off off, Dwarf_Die out)
 		{
-			::Dwarf_Die d;
-			if (::dwarf_offdie(dbg->dw, off, &d) == nullptr) return DW_DLV_ERROR;
-			Dwarf_Die out = new Dwarf_Die_s();
-			out->d = d; out->dbg = dbg;
-			*ret_die = out;
+			if (::dwarf_offdie(dbg->dw, off, L(out)) == nullptr) return DW_DLV_ERROR;
 			return DW_DLV_OK;
 		}
 
 		/* ---- DIE accessors ---------------------------------------------- */
 		int dwarf_dieoffset(Dwarf_Die die, Dwarf_Off *ret_off, Dwarf_Error * /*error*/)
 		{
-			*ret_off = ::dwarf_dieoffset(&die->d);
+			*ret_off = ::dwarf_dieoffset(L(die));
 			return DW_DLV_OK;
 		}
 
 		int dwarf_tag(Dwarf_Die die, Dwarf_Half *ret_tag, Dwarf_Error * /*error*/)
 		{
-			*ret_tag = (Dwarf_Half) ::dwarf_tag(&die->d);
+			*ret_tag = (Dwarf_Half) ::dwarf_tag(L(die));
 			return DW_DLV_OK;
 		}
 
 		int dwarf_diename(Dwarf_Die die, char **ret_name, Dwarf_Error * /*error*/)
 		{
-			const char *n = ::dwarf_diename(&die->d);
+			const char *n = ::dwarf_diename(L(die));
 			if (!n) return DW_DLV_NO_ENTRY;
 			*ret_name = const_cast<char*>(n);
 			return DW_DLV_OK;
@@ -309,7 +279,7 @@ namespace dwarf
 		int dwarf_hasattr(Dwarf_Die die, Dwarf_Half attr, Dwarf_Bool *ret_bool,
 			Dwarf_Error * /*error*/)
 		{
-			*ret_bool = ::dwarf_hasattr(&die->d, attr) ? 1 : 0;
+			*ret_bool = ::dwarf_hasattr(L(die), attr) ? 1 : 0;
 			return DW_DLV_OK;
 		}
 
@@ -317,79 +287,57 @@ namespace dwarf
 			Dwarf_Error * /*error*/)
 		{
 			::Dwarf_Die cu;
-			if (::dwarf_diecu(&die->d, &cu, nullptr, nullptr) == nullptr)
+			if (::dwarf_diecu(L(die), &cu, nullptr, nullptr) == nullptr)
 				return DW_DLV_ERROR;
 			*ret_off = ::dwarf_dieoffset(&cu);
 			return DW_DLV_OK;
 		}
 
 		/* ---- attribute access ------------------------------------------- */
-		int dwarf_attr(Dwarf_Die die, Dwarf_Half attr, Dwarf_Attribute *ret_attr,
-			Dwarf_Error * /*error*/)
+		int dwarfpp_attr(Dwarf_Die die, Dwarf_Half attr, Dwarf_Attribute out)
 		{
-			::Dwarf_Attribute a;
-			if (::dwarf_attr(&die->d, attr, &a) == nullptr) return DW_DLV_NO_ENTRY;
-			Dwarf_Attribute out = new Dwarf_Attribute_s();
-			out->a = a; out->dbg = die->dbg;
-			*ret_attr = out;
+			if (::dwarf_attr(L(die), attr, L(out)) == nullptr) return DW_DLV_NO_ENTRY;
 			return DW_DLV_OK;
 		}
 
 		namespace {
-			struct attrlist_ctx {
-				Dwarf_Debug_s *dbg;
-				std::vector<Dwarf_Attribute_s*> *out;
-			};
-			int attrlist_cb(::Dwarf_Attribute *a, void *arg)
+			struct getattrs_trampoline { int (*cb)(Dwarf_Attribute, void*); void *arg; };
+			int getattrs_thunk(::Dwarf_Attribute *a, void *p)
 			{
-				attrlist_ctx *ctx = static_cast<attrlist_ctx*>(arg);
-				Dwarf_Attribute_s *w = new Dwarf_Attribute_s();
-				w->a = *a; w->dbg = ctx->dbg;
-				ctx->out->push_back(w);
-				return DWARF_CB_OK;
+				getattrs_trampoline *t = static_cast<getattrs_trampoline*>(p);
+				return t->cb(reinterpret_cast<Dwarf_Attribute>(a), t->arg);
 			}
 		}
 
-		int dwarf_attrlist(Dwarf_Die die, Dwarf_Attribute **attrbuf,
-			Dwarf_Signed *attrcount, Dwarf_Error * /*error*/)
+		int dwarfpp_getattrs(Dwarf_Die die,
+			int (*cb)(Dwarf_Attribute, void *), void *arg)
 		{
-			std::vector<Dwarf_Attribute_s*> collected;
-			attrlist_ctx ctx { die->dbg, &collected };
-			/* Our callback always returns DWARF_CB_OK, so a single pass visits
-			 * every attribute; libdw then returns 1 ("done") or -1 (error). */
-			ptrdiff_t off = ::dwarf_getattrs(&die->d, attrlist_cb, &ctx, 0);
-			if (off < 0)
-			{
-				for (auto p : collected) delete p;
-				return DW_DLV_ERROR;
-			}
-			if (collected.empty()) return DW_DLV_NO_ENTRY;
-			Dwarf_Attribute *arr = static_cast<Dwarf_Attribute*>(
-				malloc(collected.size() * sizeof(Dwarf_Attribute)));
-			for (size_t i = 0; i < collected.size(); ++i) arr[i] = collected[i];
-			*attrbuf = arr;
-			*attrcount = (Dwarf_Signed) collected.size();
-			return DW_DLV_OK;
+			getattrs_trampoline t { cb, arg };
+			/* Our thunk forwards the user's return code (DWARF_CB_OK to continue);
+			 * dwarf_getattrs returns a negative offset on error, else the offset
+			 * at which iteration stopped. */
+			ptrdiff_t off = ::dwarf_getattrs(L(die), getattrs_thunk, &t, 0);
+			return (off < 0) ? DW_DLV_ERROR : DW_DLV_OK;
 		}
 
 		int dwarf_whatattr(Dwarf_Attribute attr, Dwarf_Half *ret_attr,
 			Dwarf_Error * /*error*/)
 		{
-			*ret_attr = (Dwarf_Half) ::dwarf_whatattr(&attr->a);
+			*ret_attr = (Dwarf_Half) ::dwarf_whatattr(L(attr));
 			return DW_DLV_OK;
 		}
 
 		int dwarf_whatform(Dwarf_Attribute attr, Dwarf_Half *ret_form,
 			Dwarf_Error * /*error*/)
 		{
-			*ret_form = (Dwarf_Half) ::dwarf_whatform(&attr->a);
+			*ret_form = (Dwarf_Half) ::dwarf_whatform(L(attr));
 			return DW_DLV_OK;
 		}
 
 		/* ---- form value extraction -------------------------------------- */
 		int dwarf_formstring(Dwarf_Attribute attr, char **ret, Dwarf_Error * /*error*/)
 		{
-			const char *s = ::dwarf_formstring(&attr->a);
+			const char *s = ::dwarf_formstring(L(attr));
 			if (!s) return DW_DLV_ERROR;
 			*ret = const_cast<char*>(s);
 			return DW_DLV_OK;
@@ -398,7 +346,7 @@ namespace dwarf
 		int dwarf_formflag(Dwarf_Attribute attr, Dwarf_Bool *ret, Dwarf_Error * /*error*/)
 		{
 			bool b = false;
-			if (::dwarf_formflag(&attr->a, &b) != 0) return DW_DLV_ERROR;
+			if (::dwarf_formflag(L(attr), &b) != 0) return DW_DLV_ERROR;
 			*ret = b ? 1 : 0;
 			return DW_DLV_OK;
 		}
@@ -406,7 +354,7 @@ namespace dwarf
 		int dwarf_formaddr(Dwarf_Attribute attr, Dwarf_Addr *ret, Dwarf_Error * /*error*/)
 		{
 			::Dwarf_Addr a = 0;
-			if (::dwarf_formaddr(&attr->a, &a) != 0) return DW_DLV_ERROR;
+			if (::dwarf_formaddr(L(attr), &a) != 0) return DW_DLV_ERROR;
 			*ret = a;
 			return DW_DLV_OK;
 		}
@@ -414,7 +362,7 @@ namespace dwarf
 		int dwarf_formudata(Dwarf_Attribute attr, Dwarf_Unsigned *ret, Dwarf_Error * /*error*/)
 		{
 			::Dwarf_Word w = 0;
-			if (::dwarf_formudata(&attr->a, &w) != 0) return DW_DLV_ERROR;
+			if (::dwarf_formudata(L(attr), &w) != 0) return DW_DLV_ERROR;
 			*ret = w;
 			return DW_DLV_OK;
 		}
@@ -422,7 +370,7 @@ namespace dwarf
 		int dwarf_formsdata(Dwarf_Attribute attr, Dwarf_Signed *ret, Dwarf_Error * /*error*/)
 		{
 			::Dwarf_Sword w = 0;
-			if (::dwarf_formsdata(&attr->a, &w) != 0) return DW_DLV_ERROR;
+			if (::dwarf_formsdata(L(attr), &w) != 0) return DW_DLV_ERROR;
 			*ret = w;
 			return DW_DLV_OK;
 		}
@@ -432,13 +380,13 @@ namespace dwarf
 			/* Reference forms (DW_FORM_ref*) resolve to a DIE; section-offset
 			 * forms (DW_FORM_sec_offset, data4/8) are read as a raw value. */
 			::Dwarf_Die d;
-			if (::dwarf_formref_die(&attr->a, &d) != nullptr)
+			if (::dwarf_formref_die(L(attr), &d) != nullptr)
 			{
 				*ret = ::dwarf_dieoffset(&d);
 				return DW_DLV_OK;
 			}
 			::Dwarf_Word w = 0;
-			if (::dwarf_formudata(&attr->a, &w) == 0)
+			if (::dwarf_formudata(L(attr), &w) == 0)
 			{
 				*ret = w;
 				return DW_DLV_OK;
@@ -446,49 +394,29 @@ namespace dwarf
 			return DW_DLV_ERROR;
 		}
 
-		int dwarf_formblock(Dwarf_Attribute attr, Dwarf_Block **ret, Dwarf_Error * /*error*/)
+		/* A block's bytes live in the section data that the ::Dwarf owns, so we
+		 * just copy libdw's two fields into the caller's inline Dwarf_Block --
+		 * no heap allocation, nothing to dwarf_dealloc. */
+		int dwarfpp_formblock(Dwarf_Attribute attr, Dwarf_Block *out)
 		{
 			::Dwarf_Block blk;
-			if (::dwarf_formblock(&attr->a, &blk) != 0) return DW_DLV_ERROR;
-			Dwarf_Block *out = new Dwarf_Block();
+			if (::dwarf_formblock(L(attr), &blk) != 0) return DW_DLV_ERROR;
 			out->bl_len = blk.length;
 			out->bl_data = blk.data;
 			out->bl_from_loclist = 0;
 			out->bl_section_offset = 0;
-			*ret = out;
 			return DW_DLV_OK;
 		}
 
 		/* ---- deallocation / errors -------------------------------------- *
-		 * libdw owns the storage behind names, strings and block data, so we
-		 * only ever free the little wrappers (and arrays) that we allocated. */
-		void dwarf_dealloc(Dwarf_Debug /*dbg*/, void *space, Dwarf_Unsigned type)
+		 * In the direct model nothing the handle layer hands back is heap-
+		 * allocated by us: dies, attributes and blocks are held by value, and the
+		 * cold paths (loclists, ranges, srcfiles) own their results in C++
+		 * containers. dwarf_dealloc is thus a no-op shim, retained because the
+		 * handle deleters and string_deleter still call it (e.g. DW_DLA_STRING,
+		 * whose storage libdw owns). */
+		void dwarf_dealloc(Dwarf_Debug /*dbg*/, void * /*space*/, Dwarf_Unsigned /*type*/)
 		{
-			if (!space || space == (void*)-1) return;
-			switch (type)
-			{
-				case DW_DLA_DIE:
-					delete static_cast<Dwarf_Die_s*>(space);
-					break;
-				case DW_DLA_ATTR:
-					delete static_cast<Dwarf_Attribute_s*>(space);
-					break;
-				case DW_DLA_BLOCK:
-					delete static_cast<Dwarf_Block*>(space);
-					break;
-				case DW_DLA_LOCDESC:
-				case DW_DLA_LOC_BLOCK:
-				case DW_DLA_LIST:
-					/* Location descriptors, their Dwarf_Loc arrays, and our
-					 * pointer-arrays are all malloc'd by the loclist code below. */
-					free(space);
-					break;
-				case DW_DLA_STRING:
-				case DW_DLA_ERROR:
-				default:
-					/* nothing we own */
-					break;
-			}
 		}
 
 		const char *dwarf_errmsg(Dwarf_Error /*error*/)
@@ -503,34 +431,22 @@ namespace dwarf
 		}
 
 		/* ================================================================== *
-		 *  Location lists and range lists, over libdw.                         *
+		 *  Location lists and range lists, over libdw.                        *
 		 * ================================================================== */
 		namespace {
-			/* Build a malloc'd Dwarf_Loc[] from libdw's parsed Dwarf_Op[]. The
-			 * two structs are field-for-field equivalent. */
-			Dwarf_Loc *loc_array_from_ops(const ::Dwarf_Op *ops, size_t n)
+			/* Fill a Dwarf_Loc vector from libdw's parsed Dwarf_Op[]. The two
+			 * structs are field-for-field equivalent. */
+			void ops_to_loc_vector(const ::Dwarf_Op *ops, size_t n,
+				std::vector<Dwarf_Loc>& out)
 			{
-				Dwarf_Loc *arr = static_cast<Dwarf_Loc*>(malloc((n ? n : 1) * sizeof(Dwarf_Loc)));
+				out.resize(n);
 				for (size_t i = 0; i < n; ++i)
 				{
-					arr[i].lr_atom    = ops[i].atom;
-					arr[i].lr_number  = ops[i].number;
-					arr[i].lr_number2 = ops[i].number2;
-					arr[i].lr_offset  = ops[i].offset;
+					out[i].lr_atom    = ops[i].atom;
+					out[i].lr_number  = ops[i].number;
+					out[i].lr_number2 = ops[i].number2;
+					out[i].lr_offset  = ops[i].offset;
 				}
-				return arr;
-			}
-			Dwarf_Locdesc *make_locdesc(Dwarf_Loc *locs, Dwarf_Half cents,
-				Dwarf_Addr lopc, Dwarf_Addr hipc)
-			{
-				Dwarf_Locdesc *ld = static_cast<Dwarf_Locdesc*>(malloc(sizeof(Dwarf_Locdesc)));
-				ld->ld_lopc = lopc;
-				ld->ld_hipc = hipc;
-				ld->ld_cents = cents;
-				ld->ld_s = locs;
-				ld->ld_from_loclist = 0;
-				ld->ld_section_offset = 0;
-				return ld;
 			}
 
 			/* Minimal LEB128 readers over a byte buffer. */
@@ -568,9 +484,7 @@ namespace dwarf
 
 			/* Decode a DWARF location/CFA expression's bytes into Dwarf_Locs.
 			 * Returns false if an unrecognised opcode is hit (whose operand
-			 * length we cannot know), so the caller can degrade gracefully --
-			 * mirroring libdwarf's "didn't understand the expression" behaviour.
-			 * addr_size/offset_size default to 8/4 (we are not told them here). */
+			 * length we cannot know), so the caller can degrade gracefully. */
 			bool parse_expr(const unsigned char *p, size_t len,
 				unsigned addr_size, unsigned offset_size, std::vector<Dwarf_Loc> &out)
 			{
@@ -587,7 +501,6 @@ namespace dwarf
 						loc.lr_number = (Dwarf_Unsigned) read_sleb(p, len, i);
 					else switch (op)
 					{
-						/* operandless */
 						case DW_OP_deref: case DW_OP_dup: case DW_OP_drop:
 						case DW_OP_over: case DW_OP_swap: case DW_OP_rot:
 						case DW_OP_xderef: case DW_OP_abs: case DW_OP_and:
@@ -601,7 +514,6 @@ namespace dwarf
 						case DW_OP_form_tls_address: case DW_OP_call_frame_cfa:
 						case DW_OP_stack_value:
 							break;
-						/* single fixed-size unsigned operand */
 						case DW_OP_const1u: case DW_OP_pick:
 						case DW_OP_deref_size: case DW_OP_xderef_size:
 							loc.lr_number = read_fixed<uint8_t>(p, len, i); break;
@@ -617,7 +529,6 @@ namespace dwarf
 							loc.lr_number = (Dwarf_Unsigned)(int64_t)(int32_t)read_fixed<uint32_t>(p, len, i); break;
 						case DW_OP_const8u: case DW_OP_const8s:
 							loc.lr_number = read_fixed<uint64_t>(p, len, i); break;
-						/* address / section-offset sized operand */
 						case DW_OP_addr:
 							loc.lr_number = (addr_size == 4)
 								? read_fixed<uint32_t>(p, len, i)
@@ -628,25 +539,19 @@ namespace dwarf
 								? read_fixed<uint64_t>(p, len, i)
 								: read_fixed<uint32_t>(p, len, i);
 							break;
-						/* single ULEB operand */
 						case DW_OP_constu: case DW_OP_plus_uconst: case DW_OP_regx:
 						case DW_OP_piece: case DW_OP_addrx: case DW_OP_constx:
 							loc.lr_number = (Dwarf_Unsigned) read_uleb(p, len, i); break;
-						/* single SLEB operand */
 						case DW_OP_consts: case DW_OP_fbreg:
 							loc.lr_number = (Dwarf_Unsigned) read_sleb(p, len, i); break;
-						/* ULEB register + SLEB offset */
 						case DW_OP_bregx:
 							loc.lr_number  = (Dwarf_Unsigned) read_uleb(p, len, i);
 							loc.lr_number2 = (Dwarf_Unsigned) read_sleb(p, len, i);
 							break;
-						/* two ULEB operands */
 						case DW_OP_bit_piece:
 							loc.lr_number  = (Dwarf_Unsigned) read_uleb(p, len, i);
 							loc.lr_number2 = (Dwarf_Unsigned) read_uleb(p, len, i);
 							break;
-						/* ULEB length + that many bytes of sub-block; we record the
-						 * length and skip the bytes. */
 						case DW_OP_implicit_value:
 						case DW_OP_entry_value:
 						{
@@ -656,166 +561,117 @@ namespace dwarf
 							break;
 						}
 						default:
-							/* unknown opcode: cannot know operand size */
 							return false;
 					}
-					if (i > len) return false; /* operand ran past the buffer */
+					if (i > len) return false;
 					out.push_back(loc);
 				}
 				return true;
 			}
 		} // anonymous namespace
 
-		int dwarf_loclist_n(Dwarf_Attribute attr, Dwarf_Locdesc ***llbuf,
-			Dwarf_Signed *loc_count, Dwarf_Error * /*error*/)
+		/* A true location list: each entry is a parsed op vector plus its
+		 * [lopc,hipc) guard. The handle layer materialises each as an inline
+		 * Dwarf_Locdesc, so we hand back the parsed ops directly with no malloc. */
+		int dwarfpp_loclist(Dwarf_Attribute attr, std::vector<LoclistEntry>& out)
 		{
-			/* dwarf_getlocations enumerates each entry of a location list (or the
-			 * single expression of an exprloc/block) as a parsed Dwarf_Op array
-			 * plus its [startp,endp) PC range. */
-			std::vector<Dwarf_Locdesc*> descs;
+			out.clear();
 			ptrdiff_t off = 0;
 			::Dwarf_Addr base = 0, start = 0, end = 0;
 			::Dwarf_Op *ops = nullptr; size_t nops = 0;
-			while ((off = ::dwarf_getlocations(&attr->a, off, &base, &start, &end,
+			while ((off = ::dwarf_getlocations(L(attr), off, &base, &start, &end,
 				&ops, &nops)) > 0)
 			{
-				Dwarf_Loc *locs = loc_array_from_ops(ops, nops);
-				descs.push_back(make_locdesc(locs, (Dwarf_Half) nops, start, end));
+				LoclistEntry e;
+				e.lopc = start; e.hipc = end;
+				ops_to_loc_vector(ops, nops, e.ops);
+				out.push_back(std::move(e));
 			}
-			if (off < 0)
-			{
-				for (auto *d : descs) { free(d->ld_s); free(d); }
-				return DW_DLV_ERROR;
-			}
-			if (descs.empty()) return DW_DLV_NO_ENTRY;
-			Dwarf_Locdesc **arr = static_cast<Dwarf_Locdesc**>(
-				malloc(descs.size() * sizeof(Dwarf_Locdesc*)));
-			for (size_t i = 0; i < descs.size(); ++i) arr[i] = descs[i];
-			*llbuf = arr;
-			*loc_count = (Dwarf_Signed) descs.size();
+			if (off < 0) { out.clear(); return DW_DLV_ERROR; }
+			if (out.empty()) return DW_DLV_NO_ENTRY;
 			return DW_DLV_OK;
 		}
 
-		int dwarf_loclist_from_expr(Dwarf_Debug /*dbg*/, Dwarf_Ptr bytes_in,
-			Dwarf_Unsigned bytes_len, Dwarf_Locdesc **llbuf,
-			Dwarf_Signed *list_len, Dwarf_Error * /*error*/)
+		/* A bare location expression (DW_FORM_exprloc, or raw caller bytes): decode
+		 * the operations into the caller's vector. It is valid for the entire
+		 * address range, which we report as libdwarf does: lopc = 0, hipc = ~0. */
+		int dwarfpp_loclist_from_expr(Dwarf_Ptr bytes_in, Dwarf_Unsigned bytes_len,
+			std::vector<Dwarf_Loc>& out_ops, Dwarf_Addr *out_lopc, Dwarf_Addr *out_hipc)
 		{
-			std::vector<Dwarf_Loc> parsed;
+			out_ops.clear();
 			if (!parse_expr(static_cast<const unsigned char*>(bytes_in),
-				(size_t) bytes_len, /*addr_size*/8, /*offset_size*/4, parsed))
+				(size_t) bytes_len, /*addr_size*/8, /*offset_size*/4, out_ops))
 			{
+				out_ops.clear();
 				return DW_DLV_ERROR; /* unrecognised opcode -> caller degrades */
 			}
-			Dwarf_Loc *locs = static_cast<Dwarf_Loc*>(
-				malloc((parsed.size() ? parsed.size() : 1) * sizeof(Dwarf_Loc)));
-			for (size_t i = 0; i < parsed.size(); ++i) locs[i] = parsed[i];
-			/* A bare location expression (exprloc/block, not a location list) is
-			 * valid for the entire address range. Encode that the way libdwarf
-			 * does: ld_lopc = 0, ld_hipc = all-ones. Consumers such as
-			 * loclist::loc_for_vaddr select an expression with the half-open test
-			 * (vaddr >= lopc && vaddr < hipc), so a [0,0) range would match no
-			 * vaddr -- making static variables look like they have no location. */
-			*llbuf = make_locdesc(locs, (Dwarf_Half) parsed.size(),
-				0, (Dwarf_Addr) -1);
-			*list_len = 1;
+			if (out_lopc) *out_lopc = 0;
+			if (out_hipc) *out_hipc = (Dwarf_Addr) -1;
 			return DW_DLV_OK;
 		}
 
 		int dwarf_formexprloc(Dwarf_Attribute attr, Dwarf_Unsigned *ret_exprlen,
 			Dwarf_Ptr *block_ptr, Dwarf_Error * /*error*/)
 		{
-			/* DW_FORM_exprloc is a counted block; libdw's dwarf_formblock yields
-			 * its raw bytes, which the handle layer then hands to
-			 * dwarf_loclist_from_expr above. */
 			::Dwarf_Block blk;
-			if (::dwarf_formblock(&attr->a, &blk) != 0) return DW_DLV_NO_ENTRY;
+			if (::dwarf_formblock(L(attr), &blk) != 0) return DW_DLV_NO_ENTRY;
 			if (ret_exprlen) *ret_exprlen = blk.length;
 			if (block_ptr) *block_ptr = blk.data;
 			return DW_DLV_OK;
 		}
 
-		/* dwarf_get_ranges{,_a} read a .debug_ranges/.debug_rnglists list. The
-		 * libdwarf API keys on a section offset; libdw's dwarf_ranges keys on the
-		 * owning DIE, so the _a form (which has the DIE) is the one we can serve.
-		 * libdw resolves base-address selection internally, so every entry we
-		 * emit is a plain DW_RANGES_ENTRY, terminated by a DW_RANGES_END. */
-		static int get_ranges_via_die(Dwarf_Die die, Dwarf_Ranges **rangesbuf,
-			Dwarf_Signed *listlen, Dwarf_Unsigned *bytecount)
+		/* Ranges: libdw yields ranges as (start,end) pairs keyed on the owning
+		 * DIE, so the libdwarf-shaped array must be materialised. We build it
+		 * straight into the caller's vector (one allocation, freed by the
+		 * handle's vector) rather than malloc'ing a buffer to dwarf_ranges_dealloc.
+		 * The trailing DW_RANGES_END entry mirrors libdwarf's terminator. */
+		int dwarfpp_get_ranges(Dwarf_Die die, std::vector<Dwarf_Ranges>& out)
 		{
+			out.clear();
 			if (!die) return DW_DLV_NO_ENTRY;
-			std::vector<Dwarf_Ranges> v;
 			ptrdiff_t off = 0;
 			::Dwarf_Addr base = 0, start = 0, end = 0;
-			while ((off = ::dwarf_ranges(&die->d, off, &base, &start, &end)) > 0)
+			while ((off = ::dwarf_ranges(L(die), off, &base, &start, &end)) > 0)
 			{
 				Dwarf_Ranges r;
 				r.dwr_addr1 = start; r.dwr_addr2 = end; r.dwr_type = DW_RANGES_ENTRY;
-				v.push_back(r);
+				out.push_back(r);
 			}
-			if (off < 0) return DW_DLV_ERROR;
-			if (v.empty()) return DW_DLV_NO_ENTRY;
+			if (off < 0) { out.clear(); return DW_DLV_ERROR; }
+			if (out.empty()) return DW_DLV_NO_ENTRY;
 			Dwarf_Ranges term; term.dwr_addr1 = 0; term.dwr_addr2 = 0;
 			term.dwr_type = DW_RANGES_END;
-			v.push_back(term);
-			Dwarf_Ranges *arr = static_cast<Dwarf_Ranges*>(
-				malloc(v.size() * sizeof(Dwarf_Ranges)));
-			for (size_t i = 0; i < v.size(); ++i) arr[i] = v[i];
-			*rangesbuf = arr;
-			*listlen = (Dwarf_Signed) v.size();
-			if (bytecount) *bytecount = 0;
+			out.push_back(term);
 			return DW_DLV_OK;
 		}
-		int dwarf_get_ranges(Dwarf_Debug, Dwarf_Off, Dwarf_Ranges **,
-			Dwarf_Signed *, Dwarf_Unsigned *, Dwarf_Error *)
+		/* srcfiles: the file-name strings belong to libdw, so we hand back plain
+		 * const char* into the caller's vector -- no malloc'd char** to free.
+		 * libdwarfpp indexes this as names[decl_file - 1], i.e. element k is
+		 * DWARF file number k+1; libdw's dwarf_filesrc takes the file number
+		 * directly (index 0 reserved), so element k maps to file k + 1. */
+		int dwarfpp_srcfiles(Dwarf_Die die, std::vector<const char*>& out)
 		{
-			/* No owning DIE available here; the DIE-aware _a form is used by
-			 * libdwarfpp's range handling, so this remains unsupported. */
-			return DW_DLV_NO_ENTRY;
-		}
-		int dwarf_get_ranges_a(Dwarf_Debug, Dwarf_Off, Dwarf_Die die,
-			Dwarf_Ranges **rangesbuf, Dwarf_Signed *listlen,
-			Dwarf_Unsigned *bytecount, Dwarf_Error * /*error*/)
-		{
-			return get_ranges_via_die(die, rangesbuf, listlen, bytecount);
-		}
-		void dwarf_ranges_dealloc(Dwarf_Debug, Dwarf_Ranges *rangesbuf, Dwarf_Signed)
-		{
-			if (rangesbuf && rangesbuf != (Dwarf_Ranges*)-1) free(rangesbuf);
-		}
-		int dwarf_srcfiles(Dwarf_Die die, char ***srcfiles, Dwarf_Signed *count,
-			Dwarf_Error * /*error*/)
-		{
-			/* libdwarf's dwarf_srcfiles returns a 0-based array whose element i
-			 * is DWARF file number i+1 (file 0 means "no file"); libdwarfpp
-			 * indexes it as names[decl_file - 1]. libdw's dwarf_filesrc takes the
-			 * DWARF file number directly (index 0 being the reserved slot), so we
-			 * map element i -> dwarf_filesrc(files, i + 1). */
+			out.clear();
 			::Dwarf_Files *files = nullptr; size_t n = 0;
-			if (::dwarf_getsrcfiles(&die->d, &files, &n) != 0) return DW_DLV_ERROR;
+			if (::dwarf_getsrcfiles(L(die), &files, &n) != 0) return DW_DLV_ERROR;
 			if (n <= 1) return DW_DLV_NO_ENTRY;
-			size_t m = n - 1;
-			char **arr = static_cast<char**>(malloc(m * sizeof(char*)));
-			for (size_t i = 0; i < m; ++i)
+			for (size_t i = 1; i < n; ++i)
 			{
-				const char *s = ::dwarf_filesrc(files, i + 1, nullptr, nullptr);
-				arr[i] = const_cast<char*>(s ? s : "");
+				const char *s = ::dwarf_filesrc(files, i, nullptr, nullptr);
+				out.push_back(s ? s : "");
 			}
-			*srcfiles = arr;
-			*count = (Dwarf_Signed) m;
 			return DW_DLV_OK;
 		}
 
 		/* ================================================================== *
 		 *  Frame / CFI, over libdw's dwarf_next_cfi (.debug_frame/.eh_frame). *
 		 *                                                                     *
-		 *  libdw's higher-level CFI API (dwarf_cfi_addrframe) only yields the *
-		 *  *computed* unwind state at an address, whereas libdwarfpp's        *
-		 *  FrameSection iterates raw CIEs/FDEs and interprets the instruction *
-		 *  streams itself. So we parse the frame section with dwarf_next_cfi  *
-		 *  -- which frames each entry and points into the section data -- and  *
-		 *  present the result as libdwarf's FDE/CIE handle API. The Cie/Fde    *
-		 *  handles are pointers into structures we own; equality is pointer    *
-		 *  identity, as libdwarfpp expects.                                    *
+		 *  libdwarfpp's FrameSection iterates raw CIEs/FDEs and interprets    *
+		 *  the instruction streams itself, so we parse the frame section with *
+		 *  dwarf_next_cfi -- which frames each entry and points into the      *
+		 *  section data -- and present the result as libdwarf's FDE/CIE API.  *
+		 *  Cie/Fde handles are pointers into structures we own; equality is   *
+		 *  pointer identity, as libdwarfpp expects.                           *
 		 * ================================================================== */
 
 		namespace {
@@ -1012,14 +868,12 @@ namespace dwarf
 					f->instr_bytes = const_cast<uint8_t*>(p);
 					f->instr_len = (Dwarf_Unsigned)(pend - p);
 					f->fde_bytes = const_cast<uint8_t*>(sec + off);
-					/* fde_byte_length is the value of the FDE's length field, i.e.
-					 * excludes the length field itself (matching libdwarf/readelf). */
 					bool fde_is64 = (sec + off + 4 <= sec + data->d_size)
 						&& (*reinterpret_cast<const uint32_t*>(sec + off) == 0xffffffffu);
 					f->fde_byte_length = (Dwarf_Unsigned)(next - off) - (fde_is64 ? 12 : 4);
-					/* libdwarf reports, for .eh_frame, the *relative* CIE pointer that
-					 * FrameSection turns back into an absolute offset; for .debug_frame
-					 * it is already absolute. (FrameSection assumes 32-bit DWARF format.) */
+					/* libdwarf reports, for .eh_frame, the *relative* CIE pointer
+					 * that FrameSection turns back into an absolute offset; for
+					 * .debug_frame it is already absolute. */
 					f->cie_offset_field = eh
 						? (Dwarf_Off)(off + 4) - abs_cie_off
 						: abs_cie_off;
@@ -1028,13 +882,9 @@ namespace dwarf
 				off = next;
 			}
 
-			/* libdwarfpp's FrameSection requires the FDE array to be sorted by
-			 * initial location (it locates an FDE by PC, then walks subsequent
-			 * array entries expecting ascending low_pc -- see the DWARF
-			 * .eh_frame_hdr "sorted in increasing order by the initial location"
-			 * note in frame.hpp). A linked .eh_frame is not necessarily in that
-			 * order (the linker emits FDEs in input order), so sort here, as
-			 * libdwarf's FDE list effectively did. */
+			/* libdwarfpp's FrameSection requires the FDE array sorted by initial
+			 * location. A linked .eh_frame is not necessarily in that order, so
+			 * sort here, as libdwarf's FDE list effectively did. */
 			std::sort(fdes.begin(), fdes.end(),
 				[](const Dwarf_Fde_s *a, const Dwarf_Fde_s *b) {
 					return a->low_pc < b->low_pc;
@@ -1130,7 +980,6 @@ namespace dwarf
 		int dwarf_get_fde_at_pc(Dwarf_Fde *fde_data, Dwarf_Addr pc,
 			Dwarf_Fde *returned_fde, Dwarf_Addr *lopc, Dwarf_Addr *hipc, Dwarf_Error * /*error*/)
 		{
-			/* fde_data is the NULL-terminated array we returned from build_fde_list. */
 			if (!fde_data) return DW_DLV_NO_ENTRY;
 			for (Dwarf_Fde *p = fde_data; *p; ++p)
 			{
@@ -1148,7 +997,6 @@ namespace dwarf
 
 		int dwarf_get_CFA_name(unsigned int val_in, const char **s_out)
 		{
-			/* val_in is the reconstructed opcode byte (primary<<6 | extended). */
 			switch (val_in & 0xc0)
 			{
 				case DW_CFA_advance_loc: *s_out = "DW_CFA_advance_loc"; return DW_DLV_OK;

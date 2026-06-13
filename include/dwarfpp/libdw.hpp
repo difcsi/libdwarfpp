@@ -1,18 +1,16 @@
 /* dwarfpp: C++ binding for a useful subset of libdwarf, plus extra goodies.
  *
- * libdw.hpp: a libdwarf-compatible API implemented over elfutils' libdw.
+ * libdw.hpp: the types and C entry points backing libdwarfpp with elfutils'
+ * libdw, used directly (no libdwarf-compatibility shim).
  *
- * This header is an alternative backing for libdwarfpp. When the build is
- * configured with --with-dwarf-backend=libdw (DWARFPP_USE_LIBDW), the rest of
- * libdwarfpp is compiled against the small libdwarf-look-alike API declared
- * here, whose implementation (src/libdw-compat.cpp) is layered on top of
- * elfutils' libdw. This lets the existing handle layer (libdwarf-handles.hpp),
- * attribute code (attr.cpp) and DIE-tree code (root.cpp) be reused unchanged.
- *
- * Only the "core" DWARF-info reading path (CU/DIE traversal, names, offsets,
- * tags, attributes and their values, blocks) is implemented so far. Location
- * lists, range lists, source-file lists and frame/CFI information are stubbed
- * and will be filled in as staged follow-ups; callers degrade gracefully.
+ * When the build is configured with --with-dwarf-backend=libdw
+ * (DWARFPP_USE_LIBDW), the handle layer (libdwarf-handles.hpp) stores libdw's
+ * by-value ::Dwarf_Die / ::Dwarf_Attribute structs *inline* and drives them
+ * with the allocation-free helpers declared here, whose implementation lives in
+ * src/libdw.cpp. The earlier approach -- a libdwarf-look-alike shim that
+ * heap-allocated and dwarf_dealloc'd a wrapper per DIE and per attribute -- is
+ * gone; eliminating that per-node malloc/free churn is the performance win of
+ * going direct.
  *
  * Copyright (c) 2008--26, Stephen Kell. For licensing information, see the
  * LICENSE file in the root of the libdwarfpp tree.
@@ -21,16 +19,24 @@
 #ifndef DWARFPP_LIBDW_HPP_
 #define DWARFPP_LIBDW_HPP_
 
+#include "config.h" /* our configure-generated header, for DWARFPP_USE_LIBDW */
+
+#if not defined(DWARFPP_USE_LIBDW) || !DWARFPP_USE_LIBDW
+#error "include/dwarfpp/libdw.hpp is for the libdw backend only"
+#endif
+
 #include <iostream>
+#include <vector>  /* the cold-path entry points return into caller-owned vectors */
+#include <cstdint> /* for uintptr_t in the libdw struct mirrors below */
 
 /* We pull in only the standard DWARF constants (DW_TAG_*, DW_AT_*, DW_FORM_*,
  * DW_OP_*, DW_EH_PE_*, DW_CFA_* ...) and the Elf type here. We deliberately do
  * NOT include <elfutils/libdw.h> in this public header: it would introduce the
  * by-value ::Dwarf_Die etc. and global ::Dwarf_Addr/::Dwarf_Off/::Dwarf_Half
  * typedefs, which would clash with consumers that bring dwarf::lib::Dwarf_Addr
- * & co. into scope. The actual libdw types are needed only by the compat
- * implementation (src/libdw-compat.cpp), which includes <elfutils/libdw.h>
- * itself and there defines the opaque handle structs forward-declared below. */
+ * & co. into scope. The actual libdw types are needed only by src/libdw.cpp,
+ * which includes <elfutils/libdw.h> itself and reinterpret_casts the mirrors
+ * declared below to the real libdw structs. */
 extern "C" {
 #include <libelf.h>
 #include <dwarf.h>
@@ -59,19 +65,51 @@ namespace dwarf
 		/* libdwarf renames Elf opaquely; with libdw we use the real Elf. */
 		typedef ::Elf Elf_opaque_in_libdwarf;
 
-		/* ---- opaque handle types ----------------------------------------
-		 * libdwarf hands out pointers to opaque structs and frees them with
-		 * dwarf_dealloc(). libdw, by contrast, gives out by-value structs
-		 * whose storage is owned by the ::Dwarf. We bridge the two models with
-		 * heap-allocated wrappers (defined in src/libdw-compat.cpp) that own a
-		 * copy of the libdw by-value struct; dwarf_dealloc() deletes them. Here
-		 * the wrappers are merely forward-declared -- libdwarfpp only ever holds
-		 * them as opaque pointers. */
+		/* ---- handle types -----------------------------------------------
+		 * The original libdwarf model hands out pointers to opaque structs and
+		 * frees them with dwarf_dealloc(). libdw, by contrast, gives out small
+		 * by-value structs (::Dwarf_Die, ::Dwarf_Attribute) that own nothing --
+		 * they are lightweight references into the ::Dwarf's parsed data.
+		 *
+		 * The DIRECT backend exploits this: rather than heap-allocate a wrapper
+		 * per DIE/attribute (as a libdwarf-compatible shim must), it stores the
+		 * by-value struct *inline* inside the C++ handle object (dwarf::core::Die
+		 * / Attribute). DIE-tree traversal and attribute iteration then allocate
+		 * nothing per node, which is the whole point of going direct.
+		 *
+		 * Dwarf_Die_s / Dwarf_Attribute_s below are therefore TRANSPARENT, and
+		 * laid out identically to elfutils' ::Dwarf_Die / ::Dwarf_Attribute. We
+		 * deliberately do NOT include <elfutils/libdw.h> here: its global
+		 * Dwarf_Off / Dwarf_Addr / Dwarf_Word typedefs would clash with the
+		 * dwarf::lib ones below wherever a consumer does `using namespace
+		 * dwarf::lib`. Instead src/libdw.cpp (the only file that includes the
+		 * real header) reinterpret_casts between these mirrors and the libdw
+		 * structs, guarded by static_asserts that the layouts match exactly.
+		 *
+		 * The pointer-shaped fields are spelled as uintptr_t rather than void*
+		 * (libdwarfpp never dereferences them -- only src/libdw.cpp does, after
+		 * casting to the real type). This keeps the layout identical while
+		 * ensuring that a consumer whose own debug info happens to describe one
+		 * of these structs (these handles live inside iterator_base, after all)
+		 * sees plain integer members, not pointers-to-void -- so a type walk
+		 * over such a consumer does not run off the end into the void type. */
 		struct Dwarf_Debug_s;
 		typedef Dwarf_Debug_s *Dwarf_Debug;
-		struct Dwarf_Die_s;
+		struct Dwarf_Die_s
+		{
+			uintptr_t addr;
+			uintptr_t cu;        /* really struct Dwarf_CU* */
+			uintptr_t abbrev;    /* really Dwarf_Abbrev*    */
+			long      padding__;
+		};
 		typedef Dwarf_Die_s *Dwarf_Die;
-		struct Dwarf_Attribute_s;
+		struct Dwarf_Attribute_s
+		{
+			unsigned int code;
+			unsigned int form;
+			uintptr_t    valp;   /* really unsigned char*   */
+			uintptr_t    cu;     /* really struct Dwarf_CU* */
+		};
 		typedef Dwarf_Attribute_s *Dwarf_Attribute;
 		struct Dwarf_Error_s;
 		typedef Dwarf_Error_s *Dwarf_Error;
@@ -187,7 +225,10 @@ namespace dwarf
 		std::ostream& operator<<(std::ostream& s, const Dwarf_Locdesc& ld);
 
 		/* ================================================================== *
-		 *  The libdwarf-compatible C API, implemented in src/libdw-compat.cpp *
+		 *  The C entry points onto libdw, implemented in src/libdw.cpp.        *
+		 *  The hot path (traversal/attrs above) is allocation-free; the cold   *
+		 *  path below (loclists, ranges, srcfiles, frame/CFI) still allocates  *
+		 *  the small libdwarf-shaped result buffers it returns.                *
 		 * ================================================================== */
 
 		/* --- session / sections --- */
@@ -200,17 +241,20 @@ namespace dwarf
 		int  dwarf_get_elf(Dwarf_Debug dbg, Elf_opaque_in_libdwarf **elf,
 			Dwarf_Error *error);
 
-		/* --- CU / DIE traversal --- */
+		/* --- CU / DIE traversal ---
+		 * The traversal primitives are allocation-free: the caller supplies an
+		 * `out` pointing at its own inline Dwarf_Die_s storage, and the helper
+		 * fills it in place (returning DW_DLV_OK / DW_DLV_NO_ENTRY / DW_DLV_ERROR).
+		 * This is what lets the DIE-tree walk run without per-node malloc/free. */
 		int  dwarf_next_cu_header_b(Dwarf_Debug dbg,
 			Dwarf_Unsigned *cu_header_length, Dwarf_Half *version_stamp,
 			Dwarf_Unsigned *abbrev_offset, Dwarf_Half *address_size,
 			Dwarf_Half *offset_size, Dwarf_Half *extension_size,
 			Dwarf_Unsigned *next_cu_header_offset, Dwarf_Error *error);
-		int  dwarf_siblingof(Dwarf_Debug dbg, Dwarf_Die die,
-			Dwarf_Die *ret_sib, Dwarf_Error *error);
-		int  dwarf_child(Dwarf_Die die, Dwarf_Die *ret_child, Dwarf_Error *error);
-		int  dwarf_offdie(Dwarf_Debug dbg, Dwarf_Off off, Dwarf_Die *ret_die,
-			Dwarf_Error *error);
+		int  dwarfpp_siblingof(Dwarf_Debug dbg, Dwarf_Die die, Dwarf_Die out);
+		int  dwarfpp_child(Dwarf_Die die, Dwarf_Die out);
+		int  dwarfpp_offdie(Dwarf_Debug dbg, Dwarf_Off off, Dwarf_Die out);
+		int  dwarfpp_cu_die(Dwarf_Debug dbg, Dwarf_Die out); /* first DIE of current CU */
 
 		/* --- DIE accessors --- */
 		int  dwarf_dieoffset(Dwarf_Die die, Dwarf_Off *ret_off, Dwarf_Error *error);
@@ -221,11 +265,15 @@ namespace dwarf
 		int  dwarf_CU_dieoffset_given_die(Dwarf_Die die, Dwarf_Off *ret_off,
 			Dwarf_Error *error);
 
-		/* --- attribute access --- */
-		int  dwarf_attr(Dwarf_Die die, Dwarf_Half attr, Dwarf_Attribute *ret_attr,
-			Dwarf_Error *error);
-		int  dwarf_attrlist(Dwarf_Die die, Dwarf_Attribute **attrbuf,
-			Dwarf_Signed *attrcount, Dwarf_Error *error);
+		/* --- attribute access ---
+		 * Like the traversal helpers, these write into caller-owned inline
+		 * Dwarf_Attribute_s storage. dwarfpp_getattrs invokes `cb` once per
+		 * attribute with a pointer to a temporary Dwarf_Attribute_s (the handle
+		 * layer copies the small value into its vector), so a whole attribute
+		 * list costs one vector allocation rather than one malloc per attr. */
+		int  dwarfpp_attr(Dwarf_Die die, Dwarf_Half attr, Dwarf_Attribute out);
+		int  dwarfpp_getattrs(Dwarf_Die die,
+			int (*cb)(Dwarf_Attribute, void *), void *arg);
 		int  dwarf_whatattr(Dwarf_Attribute attr, Dwarf_Half *ret_attr,
 			Dwarf_Error *error);
 		int  dwarf_whatform(Dwarf_Attribute attr, Dwarf_Half *ret_form,
@@ -238,31 +286,36 @@ namespace dwarf
 		int  dwarf_formudata(Dwarf_Attribute attr, Dwarf_Unsigned *ret, Dwarf_Error *error);
 		int  dwarf_formsdata(Dwarf_Attribute attr, Dwarf_Signed *ret, Dwarf_Error *error);
 		int  dwarf_global_formref(Dwarf_Attribute attr, Dwarf_Off *ret, Dwarf_Error *error);
-		int  dwarf_formblock(Dwarf_Attribute attr, Dwarf_Block **ret, Dwarf_Error *error);
+		/* Block is returned by value into caller-owned inline storage: the bytes
+		 * belong to libdw, so there is nothing to free. */
+		int  dwarfpp_formblock(Dwarf_Attribute attr, Dwarf_Block *out);
 
 		/* --- deallocation / errors --- */
 		void dwarf_dealloc(Dwarf_Debug dbg, void *space, Dwarf_Unsigned type);
 		const char *dwarf_errmsg(Dwarf_Error error);
 		int  dwarf_errno(Dwarf_Error error);
 
-		/* ---- staged: location lists, ranges, source files (stubbed) ------ */
-		int  dwarf_loclist_n(Dwarf_Attribute attr, Dwarf_Locdesc ***llbuf,
-			Dwarf_Signed *loc_count, Dwarf_Error *error);
-		int  dwarf_loclist_from_expr(Dwarf_Debug dbg, Dwarf_Ptr bytes_in,
-			Dwarf_Unsigned bytes_len, Dwarf_Locdesc **llbuf,
-			Dwarf_Signed *list_len, Dwarf_Error *error);
+		/* ---- location lists, ranges, source files ------------------------ *
+		 * Loclists are returned into caller-owned vectors: a true location list as
+		 * one LoclistEntry per range-guarded descriptor (the handle layer then
+		 * materialises each as an inline Dwarf_Locdesc), and a bare expression as
+		 * a single op vector with its [lopc,hipc) guard. No malloc'd Dwarf_Locdesc
+		 * to dwarf_dealloc. */
+		struct LoclistEntry {
+			std::vector<Dwarf_Loc> ops;
+			Dwarf_Addr lopc, hipc;
+		};
+		int  dwarfpp_loclist(Dwarf_Attribute attr, std::vector<LoclistEntry>& out);
+		int  dwarfpp_loclist_from_expr(Dwarf_Ptr bytes_in, Dwarf_Unsigned bytes_len,
+			std::vector<Dwarf_Loc>& out_ops, Dwarf_Addr *out_lopc, Dwarf_Addr *out_hipc);
 		int  dwarf_formexprloc(Dwarf_Attribute attr, Dwarf_Unsigned *ret_exprlen,
 			Dwarf_Ptr *block_ptr, Dwarf_Error *error);
-		int  dwarf_get_ranges(Dwarf_Debug dbg, Dwarf_Off ranges_off,
-			Dwarf_Ranges **rangesbuf, Dwarf_Signed *listlen,
-			Dwarf_Unsigned *bytecount, Dwarf_Error *error);
-		int  dwarf_get_ranges_a(Dwarf_Debug dbg, Dwarf_Off ranges_off, Dwarf_Die die,
-			Dwarf_Ranges **rangesbuf, Dwarf_Signed *listlen,
-			Dwarf_Unsigned *bytecount, Dwarf_Error *error);
-		void dwarf_ranges_dealloc(Dwarf_Debug dbg, Dwarf_Ranges *rangesbuf,
-			Dwarf_Signed rangecount);
-		int  dwarf_srcfiles(Dwarf_Die die, char ***srcfiles, Dwarf_Signed *count,
-			Dwarf_Error *error);
+		/* Ranges and srcfiles are materialised straight into a caller-owned
+		 * container (the handle's vector), so there is no malloc'd buffer to
+		 * free. Ranges are keyed on the owning DIE; srcfile strings belong to
+		 * libdw. Both return DW_DLV_{OK,NO_ENTRY,ERROR}. */
+		int  dwarfpp_get_ranges(Dwarf_Die die, std::vector<Dwarf_Ranges>& out);
+		int  dwarfpp_srcfiles(Dwarf_Die die, std::vector<const char*>& out);
 
 		/* ---- staged: frame / CFI (stubbed) ------------------------------- */
 		int  dwarf_get_fde_list(Dwarf_Debug dbg, Dwarf_Cie **cie_data,

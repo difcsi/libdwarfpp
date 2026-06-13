@@ -6,6 +6,10 @@ pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libdwarfpp.pc
 
 dwarfpp_includedir = $(includedir)/dwarfpp
+# Installed (public) headers. The choice of DWARF backend is hidden behind the
+# two switching headers (handles.hpp, dwarfbackend.hpp); consumers include those
+# (directly or via lib.hpp) and never the backend-specific headers, which are
+# private to the library (see noinst_HEADERS below).
 dwarfpp_include_HEADERS = include/dwarfpp/dwarf-onlystd.h include/dwarfpp/frame.hpp \
   include/dwarfpp/attr.hpp include/dwarfpp/dwarf-onlystd-v2.h include/dwarfpp/lib.hpp \
   include/dwarfpp/opt.hpp include/dwarfpp/dwarf-current-adt.h include/dwarfpp/regs.hpp \
@@ -20,18 +24,28 @@ dwarfpp_include_HEADERS = include/dwarfpp/dwarf-onlystd.h include/dwarfpp/frame.
   include/dwarfpp/abstract-inl.hpp \
   include/dwarfpp/iter-inl.hpp \
   include/dwarfpp/dies-inl.hpp \
+  include/dwarfpp/handles.hpp include/dwarfpp/dwarfbackend.hpp \
+  include/dwarfpp/config.h
+
+# Backend-specific headers: private to the library, not installed. They are
+# selected by the switching headers above according to DWARFPP_USE_LIBDW.
+noinst_HEADERS = \
   include/dwarfpp/libdwarf-handles.hpp include/dwarfpp/libdwarf.hpp \
-  include/dwarfpp/libdw.hpp include/dwarfpp/libdw-compat-constants.h \
-  $(DWARF_LIB_HEADER) include/dwarfpp/config.h
+  include/dwarfpp/libdw.hpp include/dwarfpp/libdw-handles.hpp \
+  include/dwarfpp/libdw-compat-constants.h \
+  $(DWARF_LIB_HEADER)
 
 lib_LTLIBRARIES = src/libdwarfpp.la
 
-common_backing_SOURCES = src/libdwarf.cpp src/libdwarf-handles.cpp src/libdwarf-data.cpp
+common_backing_SOURCES = src/libdwarf.cpp src/libdwarf-data.cpp
 common_SOURCES = src/expr.cpp src/attr.cpp src/frame.cpp src/regs.cpp src/spec.cpp src/util.cpp src/root.cpp src/abstract.cpp src/iter.cpp src/dies.cpp
+# The handle-method implementation is backend-specific: the libdw backend uses
+# src/libdw-handles.cpp (alongside src/libdw.cpp); the libdwarf backend uses
+# src/libdwarf-handles.cpp. The two are mutually exclusive.
 if USE_LIBDW
-src_libdwarfpp_la_SOURCES = $(common_backing_SOURCES) src/libdw-compat.cpp $(common_SOURCES)
+src_libdwarfpp_la_SOURCES = $(common_backing_SOURCES) src/libdw.cpp src/libdw-handles.cpp $(common_SOURCES)
 else
-src_libdwarfpp_la_SOURCES = $(common_backing_SOURCES) $(common_SOURCES)
+src_libdwarfpp_la_SOURCES = $(common_backing_SOURCES) src/libdwarf-handles.cpp $(common_SOURCES)
 endif
 src_libdwarfpp_la_LIBADD = $(LIBSRK31CXX_LIBS) $(LIBCXXFILENO_LIBS) -lsupc++ -lboost_filesystem
 # leading space is a HACK to make this pass through 'automake'
