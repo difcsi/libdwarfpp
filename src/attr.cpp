@@ -503,7 +503,23 @@ namespace dwarf
 			m.print(s, 0);
 			return s;
 		}
+
+		attribute_value::attribute_value(attribute_value&& av) noexcept
+		 : orig_form(av.orig_form), f(av.f)
+		{
+			v_u = av.v_u;
+			av.f = NO_ATTR;
+			av.v_u = 0;
+		}
 		
+		attribute_value& attribute_value::operator=(attribute_value&& av) noexcept
+		{
+			std::swap(orig_form, av.orig_form);
+			std::swap(f, av.f);
+			std::swap(v_u, av.v_u);
+			return *this;
+		}
+
 		attribute_value::attribute_value(const attribute_value& av) : f(av.f)
 		{
 			this->orig_form = av.orig_form;

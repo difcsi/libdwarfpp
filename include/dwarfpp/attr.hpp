@@ -194,7 +194,9 @@ namespace dwarf
 			//friend std::ostream& operator<<(std::ostream& o, const dwarf::encap::die& d);
 			// copy constructor
 			attribute_value(const attribute_value& av);
-			
+			attribute_value(attribute_value&& av) noexcept;
+			attribute_value& operator=(attribute_value&& av) noexcept;
+
 			virtual ~attribute_value();
 		}; // end class attribute_value
 		
@@ -230,7 +232,7 @@ namespace dwarf
 			virtual
 			std::pair<iterator,bool> insert(value_type&& val) // was template <class P> ... (P&& val)
 			{
-				return this->base::insert(val);
+				return this->base::insert(std::move(val));
 			}
 			virtual
 			iterator insert(const_iterator position, const value_type& val)
