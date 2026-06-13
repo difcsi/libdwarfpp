@@ -83,20 +83,14 @@ static void *worker(void *)
 	assert(eq);
 	cout << "equal() ok (deep duplicates compare equal)" << endl;
 
-	/* (3) A structurally-keyed type_set over the (non-subprogram) type DIEs
-	 * must complete and deduplicate the two CUs' identical types.
-	 * NB: subprogram/subroutine types are skipped only to avoid an unrelated,
-	 * pre-existing assertion in type_describing_subprogram_die::may_equal about
-	 * void-typed formal parameters; it is orthogonal to this recursion fix. */
-	cout << "Building a type_set over all (non-subprogram) type DIEs..." << endl;
+	/* (3) A structurally-keyed type_set over all type DIEs must complete and
+	 * deduplicate the two CUs' identical types. */
+	cout << "Building a type_set over all type DIEs..." << endl;
 	type_set ts;
 	unsigned seen = 0;
 	for (auto i = root.begin(); i != root.end(); ++i)
 	{
 		if (!i.is_a<type_die>()) continue;
-		if (i.is_a<type_describing_subprogram_die>()
-			|| i.as_a<type_die>()->get_concrete_type().is_a<type_describing_subprogram_die>())
-			continue;
 		++seen;
 		ts.insert(i.as_a<type_die>());
 	}
