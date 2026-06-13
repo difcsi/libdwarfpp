@@ -113,7 +113,7 @@ namespace dwarf
 			}
 		}
 	
-		std::ostream& operator<<(std::ostream& s, const attribute_value v)
+		std::ostream& operator<<(std::ostream& s, const attribute_value& v)
 		{
 			v.print_raw(s);
 			return s;
@@ -491,11 +491,13 @@ namespace dwarf
 		
 		void attribute_map::print(std::ostream& s, unsigned indent_level) const
 		{
+			// cache indent
+			const std::string indent(indent_level, '\t');
 			for (auto i = begin(); i != end(); ++i)
 			{
-				for (unsigned u = 0; u < indent_level; ++u) s << "\t";
-				s << spec::DEFAULT_DWARF_SPEC.attr_lookup(i->first) 
-					<< ": " << i->second << endl;
+				s << indent
+					<< spec::DEFAULT_DWARF_SPEC.attr_lookup(i->first)
+					<< ": " << i->second << '\n';
 			}
 		}
 		std::ostream& operator<<(std::ostream& s, const attribute_map& m)
